@@ -42,6 +42,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # Сортировка: текущая группа (id или None — искать во всех) и порог похожести имён
     "active_group": None,
     "name_threshold": 85,
+    # Яндекс Диск: корневая папка школы и ClientID приложения (токен — в Связке ключей)
+    "disk_root": "Компьютерный класс",
+    "disk_client_id": "",
 }
 
 

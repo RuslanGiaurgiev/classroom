@@ -44,6 +44,7 @@ from shared.search import SEARCH_ENGINES, to_url
 from teacher.db import DB
 from teacher.inbox import FileReceiver
 from teacher.sorter import Sorter
+from teacher.yadisk import YandexDisk
 from teacher.netutil import is_loopback, primary_ipv4
 from teacher.pairing import PairRequestManager
 from teacher.udp_discovery import start_responder
@@ -78,6 +79,8 @@ class TeacherServer:
         storage: Storage,
         pairing: PairRequestManager | None = None,
         host_ip_fn: Callable[[], str] = primary_ipv4,
+        disk_token_store=None,
+        disk_api_base: str | None = None,
     ):
         self.storage = storage
         self.pairing = pairing or PairRequestManager()
@@ -98,6 +101,7 @@ class TeacherServer:
         self.db = DB(storage.data_dir / "teacher.sqlite3")
         self.files = FileReceiver(self)
         self.sorter = Sorter(self)
+        self.disk = YandexDisk(self, token_store=disk_token_store, **({"api_base": disk_api_base} if disk_api_base else {}))
         self.on_agent_connected.append(self._send_config)
         self.on_settings_changed.append(self._config_changed)
 
@@ -121,6 +125,7 @@ class TeacherServer:
         ])
         app.add_routes(self.files.routes())
         app.add_routes(self.sorter.routes())
+        app.add_routes(self.disk.routes())
         app.router.add_static("/ui/static/", WEB_DIR)
         return app
 
@@ -132,6 +137,7 @@ class TeacherServer:
         await site.start()
         self.port = self._runner.addresses[0][1]
         log.info("Сервер запущен на %s:%s", host, self.port)
+        self.disk.start()
         if udp_discovery:
             # Отвечаем на широковещательный поиск на том же номере порта (UDP)
             self._udp = await start_responder(self.storage.teacher_id, self.port)
@@ -142,6 +148,7 @@ class TeacherServer:
             await conn.ws.close()
         for ws in list(self.ui_clients):
             await ws.close()
+        await self.disk.stop()
         if self._udp:
             self._udp.close()
         if self._runner:
@@ -386,7 +393,8 @@ class TeacherServer:
 
     def public_settings(self) -> dict[str, Any]:
         st = self.storage.settings()
-        keys = ("search_engine", "apps", "lesson_sets", "watch_folders", "max_file_mb", "active_group", "name_threshold")
+        keys = ("search_engine", "apps", "lesson_sets", "watch_folders", "max_file_mb", "active_group",
+                "name_threshold", "disk_root", "disk_client_id")
         return {k: st.get(k) for k in keys} | {
             "search_engines": {k: v[0] for k, v in SEARCH_ENGINES.items()},
             "projects_root": str(self.projects_root()),
@@ -464,6 +472,16 @@ class TeacherServer:
             if not isinstance(t, int) or not 60 <= t <= 100:
                 raise ValueError("Порог похожести имён: от 60 до 100")
             out["name_threshold"] = t
+        if "disk_root" in body:
+            name = " ".join(str(body["disk_root"]).split())[:80]
+            if not name or "/" in name or "\\" in name:
+                raise ValueError("Название папки на Диске: без символов / и \\")
+            out["disk_root"] = name
+        if "disk_client_id" in body:
+            cid = str(body["disk_client_id"]).strip()
+            if cid and not re.fullmatch(r"[0-9a-fA-F]{32}", cid):
+                raise ValueError("ClientID — это 32 символа (цифры и буквы a–f)")
+            out["disk_client_id"] = cid
         if "projects_root" in body:
             root = str(body["projects_root"]).strip()
             if root and not Path(root).expanduser().is_absolute():
