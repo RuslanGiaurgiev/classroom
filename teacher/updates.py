@@ -1,7 +1,8 @@
 """
 Обновления агентов через Mac учителя.
 
-  • Раз в час (и при запуске) смотрим релизы на GitHub (tag «agent-vX.Y.Z»).
+  • Раз в час (и при запуске) смотрим последний релиз на GitHub (tag «agent-vX.Y.Z»)
+    по прямым ссылкам на файлы — без API, у которого есть лимит запросов.
   • Найдя версию новее — скачиваем manifest.json, manifest.sig и agent.exe,
     проверяем подпись и SHA-256 (как будет проверять и сам агент).
   • Раздаём ноутбукам по локальной сети (с токеном ноутбука):
@@ -27,7 +28,7 @@ import aiohttp
 from aiohttp import web
 
 from shared.protocol import Action
-from shared.update import UpdateError, is_newer, parse_version, verify_manifest
+from shared.update import UpdateError, is_newer, verify_manifest
 
 if TYPE_CHECKING:
     from teacher.server import AgentConn, TeacherServer
@@ -41,9 +42,9 @@ MAX_FAILS_PER_VERSION = 3   # после стольких неудач ноут�
 
 
 class UpdateManager:
-    def __init__(self, server: "TeacherServer", github_api: str = "https://api.github.com"):
+    def __init__(self, server: "TeacherServer", github_base: str = "https://github.com"):
         self.server = server
-        self.github_api = github_api
+        self.github_base = github_base
         self.dir = server.storage.data_dir / "updates"
         self.dir.mkdir(parents=True, exist_ok=True)
         self.latest: dict | None = self._load_local()   # {"version", "manifest_b64", "signature", "path"}
@@ -94,45 +95,32 @@ class UpdateManager:
             return self.public()
 
     async def _check_github(self) -> str | None:
+        """
+        Без API GitHub (у него лимит 60 запросов в час на адрес): берём файлы по прямым
+        ссылкам последнего релиза. Сначала маленький подписанный manifest.json —
+        если версия не новее, большой agent.exe даже не скачиваем.
+        """
         repo = self.settings()["repo"]
+        base = f"{self.github_base}/{repo}/releases"
         timeout = aiohttp.ClientTimeout(total=300, sock_connect=15)
-        headers = {"Accept": "application/vnd.github+json", "User-Agent": "ClassroomTeacher"}
-        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as s:
-            async with s.get(f"{self.github_api}/repos/{repo}/releases", params={"per_page": "30"}) as r:
-                r.raise_for_status()
-                releases = await r.json()
-            best = None
-            for rel in releases:
-                tag = str(rel.get("tag_name", ""))
-                if rel.get("draft") or rel.get("prerelease") or not tag.startswith("agent-v"):
-                    continue
-                try:
-                    v = parse_version(tag[len("agent-v"):])
-                except UpdateError:
-                    continue
-                if best is None or v > best[0]:
-                    best = (v, rel)
-            if best is None:
-                return None
-            version = ".".join(map(str, best[0]))
-            if self.latest and not is_newer(version, self.latest["version"]):
-                return None
-            assets = {a["name"]: a["browser_download_url"] for a in best[1].get("assets", [])}
-            if not {"manifest.json", "manifest.sig", "agent.exe"} <= set(assets):
-                raise UpdateError(f"в релизе {version} не хватает файлов")
-            async with s.get(assets["manifest.json"]) as r:
+        async with aiohttp.ClientSession(timeout=timeout, headers={"User-Agent": "ClassroomTeacher"}) as s:
+            async with s.get(f"{base}/latest/download/manifest.json") as r:
+                if r.status == 404:
+                    return None  # релизов ещё нет
                 r.raise_for_status()
                 manifest_bytes = await r.read()
-            async with s.get(assets["manifest.sig"]) as r:
+            async with s.get(f"{base}/latest/download/manifest.sig") as r:
                 r.raise_for_status()
                 signature = (await r.text()).strip()
             manifest = verify_manifest(manifest_bytes, signature)
-            if manifest["version"] != version:
-                raise UpdateError("версия в манифесте не совпадает с релизом")
+            version = manifest["version"]
+            if self.latest and not is_newer(version, self.latest["version"]):
+                return None
             path = self.dir / f"agent-{version}.exe"
             h = hashlib.sha256()
             size = 0
-            async with s.get(assets["agent.exe"]) as r:
+            # Сам файл — строго из релиза этой версии
+            async with s.get(f"{base}/download/agent-v{version}/agent.exe") as r:
                 r.raise_for_status()
                 with open(path.with_suffix(".part"), "wb") as f:
                     async for chunk in r.content.iter_chunked(1024 * 1024):

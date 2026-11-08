@@ -55,23 +55,22 @@ class FakeGitHub:
 
     def app(self):
         app = web.Application()
-        app.add_routes([web.get("/repos/{o}/{r}/releases", self.releases), web.get("/dl/{name}", self.dl)])
+        app.add_routes([web.get("/{o}/{r}/releases/latest/download/{name}", self.latest),
+                        web.get("/{o}/{r}/releases/download/{tag}/{name}", self.by_tag)])
         return app
 
-    async def releases(self, request):
-        base = f"http://127.0.0.1:{request.url.port}/dl"
-        return web.json_response([
-            {"tag_name": "agent-v0.0.1", "draft": False, "prerelease": False, "assets": []},
-            {"tag_name": f"agent-v{self.version}", "draft": False, "prerelease": False, "assets": [
-                {"name": n, "browser_download_url": f"{base}/{n}"} for n in ("agent.exe", "manifest.json", "manifest.sig")]},
-            {"tag_name": "agent-v99.0.0", "draft": True, "prerelease": False, "assets": []},
-        ])
-
-    async def dl(self, request):
+    async def latest(self, request):
         name = request.match_info["name"]
-        if name == "agent.exe":
-            return web.Response(body=self.exe + (b"!" if self.tamper else b""))
-        return web.Response(body=self.manifest if name == "manifest.json" else self.sig.encode())
+        if name == "manifest.json":
+            return web.Response(body=self.manifest)
+        if name == "manifest.sig":
+            return web.Response(body=self.sig.encode())
+        raise web.HTTPNotFound()
+
+    async def by_tag(self, request):
+        if request.match_info["tag"] != f"agent-v{self.version}" or request.match_info["name"] != "agent.exe":
+            raise web.HTTPNotFound()
+        return web.Response(body=self.exe + (b"!" if self.tamper else b""))
 
 
 async def with_github(teacher, gh):
@@ -79,7 +78,7 @@ async def with_github(teacher, gh):
     await runner.setup()
     site = web.TCPSite(runner, "127.0.0.1", 0)
     await site.start()
-    teacher.updates.github_api = f"http://127.0.0.1:{runner.addresses[0][1]}"
+    teacher.updates.github_base = f"http://127.0.0.1:{runner.addresses[0][1]}"
     return runner
 
 
