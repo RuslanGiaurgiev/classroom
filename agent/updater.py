@@ -46,6 +46,22 @@ def installed_exe_path(platform: Platform) -> Path:
     return platform.data_dir() / "bin" / "agent.exe"
 
 
+def move_aside(path: Path) -> None:
+    """
+    Убрать файл с дороги. Если его нельзя удалить (Windows: файлом ещё пользуется
+    завершающийся процесс или антивирус) — переименовываем в уникальное имя:
+    занятый .exe переименовать можно. Удалим позже, в cleanup_after_update.
+    """
+    if not path.exists():
+        return
+    try:
+        path.unlink()
+    except OSError:
+        aside = path.with_name(f"{path.stem}-{uuid.uuid4().hex[:8]}{path.suffix}")
+        os.replace(path, aside)
+        log.info("Файл %s занят — переименован в %s, удалю позже", path.name, aside.name)
+
+
 class Updater:
     def __init__(self, platform: Platform, core: "AgentCore", ready_timeout: float = READY_TIMEOUT,
                  exit_fn: Callable[[int], None] = os._exit, current_version: str = __version__):
@@ -132,7 +148,7 @@ class Updater:
         ready = self.update_dir / f"ready-{uuid.uuid4().hex}"
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
-            old.unlink(missing_ok=True)
+            move_aside(old)
             if target.exists():
                 os.replace(target, old)          # работающий exe переименовывать можно
             shutil.copy2(new_exe, target)
@@ -169,7 +185,7 @@ class Updater:
                 pass
             time.sleep(1)
         try:
-            bad.unlink(missing_ok=True)
+            move_aside(bad)
             os.replace(target, bad)
             if old.exists():
                 os.replace(old, target)
@@ -201,11 +217,11 @@ def after_update_started(platform: Platform, ready_file: str) -> None:
 def cleanup_after_update(platform: Platform) -> None:
     """Убрать старый exe и скачанные файлы (вызывается в фоне через минуту после старта)."""
     target = installed_exe_path(platform)
-    for p in (target.with_name("agent-old.exe"), target.with_name("agent-bad.exe")):
+    for p in list(target.parent.glob("agent-old*.exe")) + list(target.parent.glob("agent-bad*.exe")):
         try:
-            p.unlink(missing_ok=True)
-        except OSError:
-            pass  # ещё занят завершающейся старой версией — уберём при следующем запуске
+            p.unlink()
+        except OSError as e:
+            log.info("Пока не удалось удалить %s (%s) — попробую при следующем запуске", p.name, e)
     d = platform.data_dir() / "update"
     if d.is_dir():
         for p in d.iterdir():

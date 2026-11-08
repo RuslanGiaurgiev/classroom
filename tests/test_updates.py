@@ -172,3 +172,29 @@ async def test_agent_refuses_bad_signature_and_downgrade(teacher, tmp_path):
     assert out["updated"] is False
     await stop_agent(client, task)
     await runner.cleanup()
+
+
+async def test_update_works_when_old_file_is_locked(teacher, tmp_path, monkeypatch):
+    """Случай с ноутбука 12: agent-old.exe от прошлого обновления занят и не удаляется."""
+    runner, platform, core, client, task, target, exits = await prepare(teacher, tmp_path)
+    locked = target.with_name("agent-old.exe")
+    locked.write_bytes(b"VERY OLD")
+    real_unlink = Path.unlink
+
+    def unlink(self, missing_ok=False):
+        if self.name == "agent-old.exe":
+            raise PermissionError(5, "Отказано в доступе")
+        return real_unlink(self, missing_ok=missing_ok)
+    monkeypatch.setattr(Path, "unlink", unlink)
+    platform.on_spawn_agent = lambda exe, args, proc: Path(args[1]).write_text("ok")
+    await teacher.updates.push("1")
+    await wait_for(lambda: exits == [0], timeout=5)
+    assert target.read_bytes() == b"NEW AGENT"
+    assert target.with_name("agent-old.exe").read_bytes() == b"OLD AGENT"
+    assert [p.read_bytes() for p in target.parent.glob("agent-old-*.exe")] == [b"VERY OLD"]   # отложен в сторону
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+    from agent.updater import cleanup_after_update
+    cleanup_after_update(platform)
+    assert not list(target.parent.glob("agent-old*.exe"))
+    await stop_agent(client, task)
+    await runner.cleanup()
