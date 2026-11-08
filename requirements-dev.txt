@@ -2,3 +2,4 @@
 -r requirements-agent.txt
 pytest==8.4.1
 pytest-asyncio==1.1.0
+rapidfuzz==3.13.0   # тесты сортировки имён (часть приложения учителя)
