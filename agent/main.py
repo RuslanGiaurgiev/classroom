@@ -24,6 +24,7 @@ from agent.client import AgentClient
 from agent.collector import Collector
 from agent.core import AgentCore
 from agent.pairing import PairingFlow
+from agent.updater import after_update_started, cleanup_after_update, installed_exe_path
 from agent.platform import get_platform
 from agent.platform.base import Platform
 from agent.state import AgentState
@@ -41,10 +42,6 @@ def setup_logging(platform: Platform) -> None:
     root.addHandler(handler)
     if sys.stderr is not None:  # в .exe без консоли stderr отсутствует
         root.addHandler(logging.StreamHandler())
-
-
-def installed_exe_path(platform: Platform) -> Path:
-    return platform.data_dir() / "bin" / "agent.exe"
 
 
 def install(platform: Platform) -> Path | None:
@@ -69,12 +66,43 @@ def install(platform: Platform) -> Path | None:
     return target
 
 
+def selftest(out_file: str) -> int:
+    """
+    Проверка собранного agent.exe перед публикацией: все модули на месте,
+    ключ проверки подписи корректный. Результат пишется в файл (у exe нет консоли).
+    """
+    try:
+        import importlib
+        for mod in ("agent.collector", "agent.core", "agent.client", "agent.pairing", "agent.overlay_window",
+                    "agent.updater", "agent.discovery", "watchdog.observers", "zeroconf", "aiohttp",
+                    "cryptography.hazmat.primitives.asymmetric.ed25519", "tkinter", "sqlite3"):
+            importlib.import_module(mod)
+        if sys.platform == "win32":
+            importlib.import_module("agent.platform.windows")
+        import base64
+
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+        from shared.update import PUBLIC_KEY_B64
+        Ed25519PublicKey.from_public_bytes(base64.b64decode(PUBLIC_KEY_B64))
+        Path(out_file).write_text(f"ok {__version__}", encoding="utf-8")
+        return 0
+    except Exception as e:  # noqa: BLE001
+        Path(out_file).write_text(f"fail {e!r}", encoding="utf-8")
+        return 1
+
+
 def main(argv: list[str] | None = None, platform: Platform | None = None) -> int:
     parser = argparse.ArgumentParser(description="Агент компьютерного класса")
     parser.add_argument("--install", action="store_true")
     parser.add_argument("--uninstall", action="store_true")
     parser.add_argument("--overlay", help=argparse.SUPPRESS)  # служебный: полноэкранное окно
+    parser.add_argument("--after-update", help=argparse.SUPPRESS)  # служебный: запуск после обновления
+    parser.add_argument("--selftest", help=argparse.SUPPRESS)      # служебный: проверка сборки в CI
     args = parser.parse_args(argv)
+
+    if args.selftest:
+        return selftest(args.selftest)
 
     if args.overlay:
         # Отдельный процесс полноэкранного окна — без логов, mutex и сети
@@ -90,7 +118,19 @@ def main(argv: list[str] | None = None, platform: Platform | None = None) -> int
         platform.show_info("Агент класса", "Автозапуск выключен. Привязка к учителю сохранена.")
         return 0
 
-    if not platform.acquire_single_instance():
+    if args.after_update:
+        # Старая версия отпустила «замок» и ждёт нашего сигнала; даём ей до 20 секунд
+        import time
+        for _ in range(100):
+            if platform.acquire_single_instance():
+                break
+            time.sleep(0.2)
+        else:
+            log.error("После обновления не удалось стать единственным экземпляром")
+            return 1
+        after_update_started(platform, args.after_update)
+        log.info("Запущена обновлённая версия %s", __version__)
+    elif not platform.acquire_single_instance():
         log.info("Агент уже запущен — выходим")
         if args.install:
             install(platform)
@@ -115,6 +155,12 @@ def main(argv: list[str] | None = None, platform: Platform | None = None) -> int
     # Убираем управляющие файлы полноэкранных окон, оставшиеся от прошлого запуска
     for f in (platform.data_dir() / "overlay").glob("*.active"):
         f.unlink(missing_ok=True)
+
+    # Через минуту после старта убираем остатки прошлого обновления
+    import threading
+    t = threading.Timer(60, cleanup_after_update, args=(platform,))
+    t.daemon = True
+    t.start()
 
     core = AgentCore(platform)
     core.collector = Collector(platform)

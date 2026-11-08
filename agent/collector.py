@@ -323,6 +323,9 @@ class Collector:
 
     # ================= Отправка =================
 
+    def is_uploading(self) -> bool:
+        return self._upload_lock.locked()
+
     def pending_count(self) -> int:
         return self.ledger.pending_count() + len(self.tracker)
 

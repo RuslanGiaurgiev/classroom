@@ -103,6 +103,8 @@ function renderLaptops() {
     if (l.online && l.screen) badges.append(el("span", { className: "pill" }, SCREEN_BADGES[l.screen] || l.screen));
     else if (l.locked) badges.append(el("span", { className: "pill" }, "🔒 включится при подключении"));
     if (l.shutdown) badges.append(el("span", { className: "pill warn" }, l.shutdown === "reboot" ? "перезагрузка…" : "выключение…"));
+    if (l.update_status) badges.append(el("span", { className: "pill" + (l.update_status.startsWith("ошибка") ? " warn" : ""), title: l.update_status }, "⟳ " + l.update_status));
+    else if (l.outdated) badges.append(el("span", { className: "pill" }, "⟳ есть обновление"));
 
     const unpair = el("button", { className: "btn small danger", textContent: "Отвязать" });
     unpair.onclick = async () => {
@@ -304,6 +306,47 @@ $("btnSaveApps").onclick = async () => {
 };
 $("setEngine").onchange = () => saveSettings({ search_engine: $("setEngine").value }, "Поисковая система сохранена");
 
+// ---------- Обновления ноутбуков (Настройки) ----------
+function renderUpdates() {
+  let sec = $("updatesSettings");
+  if (!sec) {
+    sec = el("section", { className: "panel", id: "updatesSettings" });
+    $("tab-settings").insertBefore(sec, $("settingsExtra"));
+  }
+  const u = state.updates || {};
+  const versions = {};
+  for (const l of state.laptops) if (l.agent_version) versions[l.agent_version] = (versions[l.agent_version] || 0) + 1;
+  const auto = el("input", { type: "checkbox", checked: !!u.auto });
+  auto.onchange = () => saveSettings({ auto_update: auto.checked }, auto.checked ? "Автообновление включено" : "Автообновление выключено");
+  const check = el("button", { className: "btn", textContent: "Проверить обновления" });
+  check.onclick = async () => {
+    check.disabled = true; check.textContent = "проверяю…";
+    try { const r = await api("POST", "/ui/api/updates/check"); log(r.latest ? `Последняя версия агента: ${r.latest}` : "Обновлений не найдено"); }
+    catch (e) { log(e.message, true); }
+    check.disabled = false; check.textContent = "Проверить обновления";
+  };
+  const push = el("button", { className: "btn primary", textContent: "Обновить ноутбуки сейчас" });
+  push.onclick = async () => {
+    push.disabled = true;
+    try {
+      const r = await api("POST", "/ui/api/updates/push", { targets: "all" });
+      for (const [n, msg] of Object.entries(r.results)) log(`Ноутбук ${n}: ${msg}`);
+    } catch (e) { log(e.message, true); }
+    push.disabled = false;
+  };
+  const outdated = state.laptops.filter((l) => l.outdated).map((l) => l.number);
+  sec.innerHTML = "";
+  sec.append(el("h2", {}, "Обновления ноутбуков"),
+    el("p", {}, u.latest ? `Последняя версия агента: ${u.latest}` : "Новых версий пока не скачано.",
+      u.last_check ? el("span", { className: "muted small" }, ` (проверено ${new Date(u.last_check * 1000).toLocaleTimeString("ru-RU")})`) : null),
+    u.error ? el("p", { className: "error" }, u.error) : null,
+    el("p", { className: "muted small" }, "На ноутбуках: " + (Object.entries(versions).map(([v, n]) => `версия ${v} — ${n} шт.`).join(", ") || "—") +
+      (outdated.length ? `. Ждут обновления: ${outdated.join(", ")}` : "")),
+    el("label", { className: "row" }, auto, el("span", {}, "Обновлять автоматически (только когда на ноутбуке нет заставки, сообщения, отсчёта и отправки файлов)")),
+    el("div", { className: "row" }, check, push),
+    el("p", { className: "muted small" }, "Устанавливаются только версии с цифровой подписью разработчика. Если новая версия не запустится, ноутбук сам вернёт прежнюю."));
+}
+
 // ---------- Живые обновления ----------
 function onState() {
   renderLaptops();
@@ -311,6 +354,7 @@ function onState() {
   renderSets();
   renderControls();
   renderAppsEditor();
+  renderUpdates();
   for (const fn of stateListeners) { try { fn(state); } catch (e) { console.error(e); } }
 }
 

@@ -68,6 +68,7 @@ class Action(str, Enum):
     CANCEL_SHUTDOWN = "cancel_shutdown"
     COLLECT_NOW = "collect_now"          # собрать файлы прямо сейчас
     CLEANUP = "cleanup"                  # «Конец урока»: убрать в корзину только подтверждённые файлы
+    UPDATE_AGENT = "update_agent"        # обновиться до версии (файл берётся у учителя, проверяется подпись)
 
 
 # Процессы, которые нельзя закрывать ни при каких настройках
@@ -250,6 +251,12 @@ def validate_command(action: str, params: dict[str, Any]) -> tuple[Action, dict[
                 raise ProtocolError("Некорректный SHA-256 в списке")
             clean.append(h)
         return act, {"confirmed_sha256": clean}
+
+    if act is Action.UPDATE_AGENT:
+        v = params.get("version")
+        if not isinstance(v, str) or not re.fullmatch(r"\d{1,4}\.\d{1,4}\.\d{1,4}", v):
+            raise ProtocolError("Некорректная версия")
+        return act, {"version": v}
 
     # Команды без параметров
     return act, {}

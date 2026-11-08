@@ -52,6 +52,10 @@ class FakePlatform(Platform):
         self.overlays: list[FakeOverlay] = []
         self.running_processes: set[str] = {"chrome.exe", "msedge.exe"}
         self.shutdowns: list[bool] = []
+        self.self_update = False
+        self.mutex_held = True
+        self.spawned: list[tuple[Path, list[str]]] = []
+        self.on_spawn_agent = None   # тест задаёт, что «делает» новая версия
 
     def username(self) -> str:
         return self._username
@@ -78,10 +82,24 @@ class FakePlatform(Platform):
         return data[5:]
 
     def acquire_single_instance(self) -> bool:
+        self.mutex_held = True
         return True
 
     def install_autorun(self, exe_path: Path) -> None:
         self.autorun = exe_path
+
+    def release_single_instance(self) -> None:
+        self.mutex_held = False
+
+    def can_self_update(self) -> bool:
+        return self.self_update
+
+    def spawn_agent(self, exe_path: Path, args: list[str]):
+        self.spawned.append((exe_path, list(args)))
+        proc = FakeOverlay({"agent": str(exe_path)})
+        if self.on_spawn_agent:
+            self.on_spawn_agent(exe_path, args, proc)
+        return proc
 
     def uninstall_autorun(self) -> None:
         self.autorun = None

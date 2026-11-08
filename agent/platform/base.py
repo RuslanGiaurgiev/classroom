@@ -63,6 +63,18 @@ class Platform(ABC):
         """Захватить именованный mutex. False — агент уже запущен."""
 
     @abstractmethod
+    def release_single_instance(self) -> None:
+        """Отпустить mutex (перед запуском новой версии при обновлении)."""
+
+    @abstractmethod
+    def can_self_update(self) -> bool:
+        """Можно ли обновляться (только собранный agent.exe)."""
+
+    @abstractmethod
+    def spawn_agent(self, exe_path: Path, args: list[str]) -> OverlayHandle:
+        """Запустить новую версию агента отдельным процессом (не дочерним для текущего)."""
+
+    @abstractmethod
     def install_autorun(self, exe_path: Path) -> None:
         """Прописать автозапуск при входе пользователя (HKCU\\...\\Run)."""
 

@@ -246,6 +246,23 @@ class WindowsPlatform(Platform):
         self._mutex = handle  # держим, пока процесс жив
         return True
 
+    def release_single_instance(self) -> None:
+        if self._mutex:
+            kernel32.CloseHandle(self._mutex)
+            self._mutex = None
+
+    def can_self_update(self) -> bool:
+        return bool(getattr(sys, "frozen", False))
+
+    def spawn_agent(self, exe_path: Path, args: list[str]):
+        # Новая версия не должна зависеть от старого процесса (он сейчас завершится)
+        base = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+        try:
+            return subprocess.Popen([str(exe_path), *args], close_fds=True, creationflags=base | CREATE_BREAKAWAY_FROM_JOB)
+        except OSError:
+            return subprocess.Popen([str(exe_path), *args], close_fds=True, creationflags=base)
+
     def install_autorun(self, exe_path: Path) -> None:
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as k:
             winreg.SetValueEx(k, APP_NAME, 0, winreg.REG_SZ, f'"{exe_path}"')

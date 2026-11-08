@@ -133,6 +133,8 @@ class AgentCore:
         self.overlay = OverlaySupervisor(platform)
         self.shutdown = ShutdownController(platform, self.overlay, before_shutdown=self._flush_files)
         self.collector = None  # сбор файлов (agent/collector.py), подключается в main
+        from agent.updater import Updater
+        self.updater = Updater(platform, self)
         self.client = None     # AgentClient — задаётся клиентом
 
     def start_background(self) -> list[asyncio.Task]:
@@ -150,12 +152,25 @@ class AgentCore:
         if self.collector is not None:
             self.collector.apply_config(config)
 
+    def busy_reason(self) -> str | None:
+        """Почему сейчас нельзя перезапускать агент (для обновления)."""
+        if self.overlay.kind == "lock":
+            return "включена заставка «Внимание на учителя»"
+        if self.overlay.kind == "message":
+            return "на экране сообщение"
+        if self.shutdown.pending:
+            return "запланировано выключение"
+        if self.collector is not None and self.collector.is_uploading():
+            return "отправляются файлы"
+        return None
+
     def status(self) -> dict:
         """Статус для учителя: что на экране, запланировано ли выключение, сколько файлов ждёт отправки."""
         return {
             "screen": self.overlay.kind,
             "shutdown": self.shutdown.pending,
             "pending_files": self.collector.pending_count() if self.collector is not None else 0,
+            "update_error": self.updater.last_error,
         }
 
     async def _flush_files(self) -> None:
@@ -202,4 +217,10 @@ class AgentCore:
             r = await self.collector.cleanup(set(params["confirmed_sha256"]))
             text = f"убрано в корзину {r['moved']}" + (f", оставлено {len(r['kept'])}" if r["kept"] else "")
             return {"text": text, **r}
+        if action is Action.UPDATE_AGENT:
+            from shared.update import UpdateError
+            try:
+                return await self.updater.update(params["version"])
+            except UpdateError as e:
+                raise ProtocolError(str(e)) from e
         raise ProtocolError(f"Действие не поддерживается: {action}")

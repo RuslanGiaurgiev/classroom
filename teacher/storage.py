@@ -47,6 +47,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "disk_client_id": "",
     # Файлы, которые учитель велел игнорировать («*.dpapi», «logs/»)
     "ignore_patterns": [],
+    # Автообновление агентов на ноутбуках (из релизов GitHub, только с цифровой подписью)
+    "auto_update": True,
 }
 
 

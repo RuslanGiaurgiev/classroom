@@ -74,3 +74,23 @@ def test_overlay_starts_and_closes(wp, monkeypatch, tmp_path):
             break
         time.sleep(0.1)
     assert h.poll() is not None, "окно должно закрыться"
+
+
+def test_running_exe_can_be_renamed(tmp_path):
+    """На этом держится самообновление: работающий .exe можно переименовать (но не удалить)."""
+    import os
+    import shutil
+    import subprocess
+    import sys
+    import time
+    exe = tmp_path / "copy.exe"
+    shutil.copy2(sys.executable, exe)
+    proc = subprocess.Popen([str(exe), "-c", "import time; time.sleep(20)"])
+    try:
+        time.sleep(1)
+        assert proc.poll() is None
+        os.replace(exe, tmp_path / "copy-old.exe")
+        shutil.copy2(sys.executable, exe)          # на старое место кладём «новую версию»
+        assert exe.exists() and (tmp_path / "copy-old.exe").exists()
+    finally:
+        proc.kill()

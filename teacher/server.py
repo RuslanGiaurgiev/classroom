@@ -44,6 +44,7 @@ from shared.ignore import clean_patterns
 from shared.search import SEARCH_ENGINES, to_url
 from teacher.db import DB
 from teacher.endlesson import EndLesson
+from teacher.updates import UpdateManager
 from teacher.inbox import FileReceiver
 from teacher.sorter import Sorter
 from teacher.yadisk import YandexDisk
@@ -72,6 +73,7 @@ class AgentConn:
     pending_files: int = 0
     screen: str | None = None      # что сейчас на экране: lock / message / countdown
     shutdown: str | None = None    # запланировано: shutdown / reboot
+    update_error: str = ""         # последняя ошибка самообновления
     connected_at: float = field(default_factory=time.time)
 
 
@@ -105,6 +107,7 @@ class TeacherServer:
         self.files = FileReceiver(self)
         self.sorter = Sorter(self)
         self.end_lesson = EndLesson(self)
+        self.updates = UpdateManager(self)
         self.disk = YandexDisk(self, token_store=disk_token_store, **({"api_base": disk_api_base} if disk_api_base else {}))
         self.on_agent_connected.append(self._send_config)
         self.on_settings_changed.append(self._config_changed)
@@ -132,10 +135,12 @@ class TeacherServer:
         app.add_routes(self.sorter.routes())
         app.add_routes(self.disk.routes())
         app.add_routes(self.end_lesson.routes())
+        app.add_routes(self.updates.routes())
         app.router.add_static("/ui/static/", WEB_DIR)
         return app
 
-    async def start(self, host: str = "0.0.0.0", port: int | None = None, udp_discovery: bool = True) -> int:
+    async def start(self, host: str = "0.0.0.0", port: int | None = None, udp_discovery: bool = True,
+                    check_updates: bool = True) -> int:
         """Запустить сервер. port=0 — случайный свободный (для тестов). Возвращает порт."""
         self._runner = web.AppRunner(self.build_app(), access_log=None)
         await self._runner.setup()
@@ -145,6 +150,8 @@ class TeacherServer:
         log.info("Сервер запущен на %s:%s", host, self.port)
         self.sorter.purge_ignored_unsorted()
         self.disk.start()
+        if check_updates:
+            self.updates.start()
         if udp_discovery:
             # Отвечаем на широковещательный поиск на том же номере порта (UDP)
             self._udp = await start_responder(self.storage.teacher_id, self.port)
@@ -156,6 +163,7 @@ class TeacherServer:
         for ws in list(self.ui_clients):
             await ws.close()
         await self.disk.stop()
+        await self.updates.stop()
         if self._udp:
             self._udp.close()
         if self._runner:
@@ -294,8 +302,7 @@ class TeacherServer:
                 await self.broadcast_state()
         return ws
 
-    @staticmethod
-    def _apply_status(conn: AgentConn, p: dict) -> None:
+    def _apply_status(self, conn: AgentConn, p: dict) -> None:
         if "pending_files" in p:
             try:
                 conn.pending_files = max(0, int(p.get("pending_files") or 0))
@@ -307,6 +314,12 @@ class TeacherServer:
             conn.shutdown = p["shutdown"] if p["shutdown"] in ("shutdown", "reboot") else None
         if "username" in p:
             conn.username = str(p["username"])[:100]
+        if "update_error" in p:
+            err = str(p["update_error"] or "")[:300]
+            if err and err != conn.update_error:
+                # Агент сообщил о неудачном обновлении (и сам откатился) — учитываем попытку
+                self.updates.on_agent_failed(conn.number, err)
+            conn.update_error = err
 
     async def _send_to(self, conn: AgentConn, action: Action, params: dict) -> None:
         msg = Message(MsgType.COMMAND, {"command_id": uuid.uuid4().hex, "action": action.value, "params": params})
@@ -418,6 +431,8 @@ class TeacherServer:
                 "screen": conn.screen if conn else None,
                 "locked": number in self.locked,
                 "shutdown": conn.shutdown if conn else None,
+                "update_status": self.updates.status.get(number, "") or (conn.update_error if conn else ""),
+                "outdated": bool(conn and self.updates.needs_update(conn)),
                 "last_seen": info.get("last_seen"),
             })
         return {
@@ -425,6 +440,7 @@ class TeacherServer:
             "pair_requests": [r.public() for r in self.pairing.pending()],
             "teacher": {"ip": self.host_ip_fn(), "port": self.port, "teacher_id": self.storage.teacher_id},
             "settings": self.public_settings(),
+            "updates": self.updates.public(),
         }
 
     def public_settings(self) -> dict[str, Any]:
@@ -501,6 +517,8 @@ class TeacherServer:
             if not folders:
                 raise ValueError("Нужна хотя бы одна папка")
             out["watch_folders"] = folders
+        if "auto_update" in body:
+            out["auto_update"] = bool(body["auto_update"])
         if "ignore_patterns" in body:
             out["ignore_patterns"] = clean_patterns(body["ignore_patterns"])
         if "max_file_mb" in body:
