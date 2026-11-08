@@ -104,7 +104,11 @@ def main(argv: list[str] | None = None, platform: Platform | None = None) -> int
             log.info("Подключение отменено")
             return 1
 
-    if args.install or not AgentState.path(platform).with_name("installed").exists():
+    # Запустили agent.exe не из постоянного места (например, новую версию из «Загрузок») —
+    # обновляем постоянную копию, чтобы автозапуск стартовал именно её
+    running_elsewhere = getattr(sys, "frozen", False) and \
+        Path(sys.executable).resolve() != installed_exe_path(platform).resolve()
+    if args.install or running_elsewhere or not AgentState.path(platform).with_name("installed").exists():
         install(platform)
         AgentState.path(platform).with_name("installed").touch()
 
