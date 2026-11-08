@@ -10,11 +10,21 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
     from agent.pairing import PairingFlow
     from agent.state import AgentState
+
+
+class OverlayHandle(Protocol):
+    """Запущенное полноэкранное окно (процесс)."""
+
+    def poll(self) -> int | None:
+        """None — окно ещё открыто; число — процесс завершился."""
+
+    def terminate(self) -> None:
+        """Закрыть окно."""
 
 
 class Platform(ABC):
@@ -72,6 +82,25 @@ class Platform(ABC):
         Открыть адреса (уже проверенные: только http/https).
         Возвращает текст для журнала учителя, например «открыто в Chrome».
         """
+
+    @abstractmethod
+    def close_processes(self, names: list[str]) -> str:
+        """Закрыть программы по имени процесса (имена уже проверены). Возвращает текст для журнала."""
+
+    @abstractmethod
+    def spawn_overlay(self, spec: dict) -> OverlayHandle:
+        """
+        Запустить полноэкранное окно поверх всех окон отдельным процессом.
+        spec["mode"]: lock | message | countdown; spec["text"]; spec["seconds"].
+        """
+
+    @abstractmethod
+    def shutdown(self, reboot: bool) -> None:
+        """Выключить или перезагрузить компьютер немедленно."""
+
+    @abstractmethod
+    def is_hidden(self, path: Path) -> bool:
+        """Скрытый файл (атрибут «скрытый» в Windows или имя с точкой)."""
 
     # ---------- Диалоги (только при первой настройке, видит учитель) ----------
 

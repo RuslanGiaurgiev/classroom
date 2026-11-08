@@ -9,34 +9,96 @@
 <body>
   <header class="topbar">
     <h1>Компьютерный класс</h1>
-    <div class="conn" id="conn">подключение…</div>
+    <nav class="tabs">
+      <button class="tab active" data-tab="class">Класс</button>
+      <button class="tab" data-tab="projects">Проекты <span class="badge" id="unsortedBadge" hidden></span></button>
+      <button class="tab" data-tab="settings">Настройки</button>
+    </nav>
     <div class="spacer"></div>
+    <div class="conn" id="conn">подключение…</div>
     <div class="mac-addr" id="macAddr"></div>
   </header>
 
-  <main>
+  <!-- ===================== КЛАСС ===================== -->
+  <main id="tab-class" class="tabpage">
     <section class="panel requests" id="requestsPanel" hidden>
       <h2>Новые ноутбуки просят подключения</h2>
-      <p class="muted">Сверьте число с экраном ноутбука, введите номер с наклейки и нажмите «Принять».</p>
+      <p class="muted">Сверьте число с экраном ноутбука, проверьте номер с наклейки и нажмите «Принять».</p>
       <div id="requests"></div>
     </section>
+
+    <section class="panel target-bar">
+      <b>Кому:</b>
+      <label><input type="radio" name="target" value="all" checked> всем ноутбукам</label>
+      <label><input type="radio" name="target" value="selected"> только выбранным <span id="selCount">(0)</span></label>
+      <div class="spacer"></div>
+      <button class="btn big end-lesson" id="btnEndLesson" title="Собрать все проекты и очистить папки на ноутбуках">Конец урока</button>
+    </section>
+
     <section class="panel">
-      <h2>Открыть сайт</h2>
-      <div class="row">
-        <textarea id="urls" rows="2" placeholder="Адрес сайта, например scratch.mit.edu (можно несколько — каждый с новой строки)"></textarea>
-      </div>
+      <h2>Открыть сайт или найти</h2>
+      <textarea id="urls" rows="2" placeholder="Адрес сайта (scratch.mit.edu) или что найти (раскраски динозавры). Можно несколько строк — каждая откроется в своей вкладке."></textarea>
       <div class="row">
         <label>Браузер:
           <select id="browser">
-            <option value="default">Браузер по умолчанию на ноутбуке</option>
+            <option value="default">по умолчанию на ноутбуке</option>
             <option value="chrome">Google Chrome</option>
             <option value="yandex">Яндекс Браузер</option>
             <option value="edge">Microsoft Edge</option>
           </select>
         </label>
+        <label>Поиск в:
+          <select id="engine"></select>
+        </label>
         <div class="spacer"></div>
-        <button class="btn" id="btnOpenSelected">Открыть на выбранных</button>
-        <button class="btn primary" id="btnOpenAll">Открыть на всех</button>
+        <button class="btn" id="btnSaveSet">Сохранить как набор урока</button>
+        <button class="btn primary" id="btnOpen">Открыть</button>
+      </div>
+      <div class="sets" id="sets"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Управление</h2>
+      <div class="controls">
+        <div class="ctl">
+          <div class="ctl-title">Внимание на учителя</div>
+          <div class="row">
+            <input type="text" id="lockText" value="Внимание на учителя!" maxlength="200">
+            <button class="btn primary" data-cmd="lock">Включить</button>
+            <button class="btn" data-cmd="unlock">Снять</button>
+          </div>
+        </div>
+        <div class="ctl">
+          <div class="ctl-title">Сообщение на весь экран</div>
+          <div class="row">
+            <input type="text" id="msgText" placeholder="Текст сообщения" maxlength="500">
+            <select id="msgSeconds">
+              <option value="10">10 секунд</option>
+              <option value="30" selected>30 секунд</option>
+              <option value="60">1 минута</option>
+              <option value="300">5 минут</option>
+              <option value="0">пока не уберу</option>
+            </select>
+            <button class="btn primary" data-cmd="message">Показать</button>
+            <button class="btn" data-cmd="hide-message">Убрать</button>
+          </div>
+        </div>
+        <div class="ctl">
+          <div class="ctl-title">Закрыть программу</div>
+          <div class="row">
+            <select id="appSelect"></select>
+            <button class="btn" data-cmd="close-app">Закрыть</button>
+            <button class="btn" data-cmd="close-browsers" title="Chrome, Яндекс Браузер и Edge">Закрыть все браузеры</button>
+          </div>
+        </div>
+        <div class="ctl">
+          <div class="ctl-title">Питание (предупреждение за 30 секунд)</div>
+          <div class="row">
+            <button class="btn danger" data-cmd="shutdown">Выключить</button>
+            <button class="btn danger" data-cmd="reboot">Перезагрузить</button>
+            <button class="btn" data-cmd="cancel-shutdown">Отменить</button>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -58,6 +120,34 @@
     </section>
   </main>
 
+  <!-- ===================== ПРОЕКТЫ ===================== -->
+  <main id="tab-projects" class="tabpage" hidden>
+    <div id="projectsRoot"><section class="panel"><p class="muted">Загрузка…</p></section></div>
+  </main>
+
+  <!-- ===================== НАСТРОЙКИ ===================== -->
+  <main id="tab-settings" class="tabpage" hidden>
+    <section class="panel">
+      <h2>Поиск</h2>
+      <label>Поисковая система по умолчанию: <select id="setEngine"></select></label>
+      <p class="muted">Яндекс открывается с семейным фильтром, Google — с безопасным поиском.</p>
+    </section>
+
+    <section class="panel">
+      <h2>Программы для кнопки «Закрыть программу»</h2>
+      <p class="muted">Имя процесса можно посмотреть в Диспетчере задач Windows → «Подробности» (например, chrome.exe).</p>
+      <div id="appsEditor"></div>
+      <div class="row">
+        <button class="btn" id="btnAddApp">+ Добавить программу</button>
+        <div class="spacer"></div>
+        <button class="btn primary" id="btnSaveApps">Сохранить</button>
+      </div>
+    </section>
+
+    <div id="settingsExtra"></div>
+  </main>
+
   <script src="/ui/static/app.js"></script>
+  <script src="/ui/static/projects.js"></script>
 </body>
 </html>

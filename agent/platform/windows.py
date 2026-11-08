@@ -59,6 +59,7 @@ class GUID(ctypes.Structure):
 KNOWN_FOLDERS = {
     "downloads": "{374DE290-123F-4565-9164-39C4925E467B}",  # FOLDERID_Downloads
     "desktop": "{B4BFCC3A-DB2C-424C-B029-7FE99A87C641}",    # FOLDERID_Desktop
+    "documents": "{FDD39AD0-238F-46AF-ADB4-6C85480369C7}",  # FOLDERID_Documents
 }
 
 shell32.SHGetKnownFolderPath.argtypes = [ctypes.POINTER(GUID), wintypes.DWORD, wintypes.HANDLE, ctypes.POINTER(ctypes.c_wchar_p)]
@@ -87,6 +88,24 @@ kernel32.LocalFree.argtypes = [ctypes.c_void_p]
 kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
 kernel32.CreateMutexW.restype = wintypes.HANDLE
 kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+kernel32.GetFileAttributesW.argtypes = [wintypes.LPCWSTR]
+kernel32.GetFileAttributesW.restype = wintypes.DWORD
+FILE_ATTRIBUTE_HIDDEN = 0x2
+FILE_ATTRIBUTE_SYSTEM = 0x4
+INVALID_FILE_ATTRIBUTES = 0xFFFFFFFF
+CREATE_NO_WINDOW = 0x08000000
+
+
+def overlay_command(spec: dict) -> tuple[list[str], str | None]:
+    """Команда запуска полноэкранного окна отдельным процессом (тем же agent.exe)."""
+    import base64
+    import json
+    arg = base64.urlsafe_b64encode(json.dumps(spec, ensure_ascii=False).encode()).decode()
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--overlay", arg], None
+    # Запуск из исходников (для разработки)
+    repo = str(Path(__file__).resolve().parents[2])
+    return [sys.executable, "-m", "agent.main", "--overlay", arg], repo
 
 
 def _blob(data: bytes) -> tuple[DATA_BLOB, ctypes.Array]:
@@ -151,6 +170,21 @@ def find_browser(browser: str) -> Path | None:
         if p is not None and p.is_file():
             return p
     return None
+
+
+class _OverlayProcess:
+    def __init__(self, proc: subprocess.Popen, control: Path):
+        self.proc, self.control = proc, control
+
+    def poll(self):
+        return self.proc.poll()
+
+    def terminate(self):
+        self.control.unlink(missing_ok=True)
+        try:
+            self.proc.terminate()
+        except OSError:
+            pass
 
 
 class WindowsPlatform(Platform):
@@ -247,6 +281,45 @@ class WindowsPlatform(Platform):
         for url in urls:
             os.startfile(url)  # noqa: S606 — только http/https, проверено выше
         return note
+
+    def close_processes(self, names: list[str]) -> str:
+        # taskkill — системная программа Windows; имя процесса проверено протоколом,
+        # передаётся отдельным аргументом (без оболочки), поэтому подставить команду нельзя.
+        closed, absent = [], []
+        for name in names:
+            r = subprocess.run(["taskkill", "/F", "/IM", name], capture_output=True,
+                               creationflags=CREATE_NO_WINDOW, timeout=20)
+            (closed if r.returncode == 0 else absent).append(name)
+        parts = []
+        if closed:
+            parts.append("закрыто: " + ", ".join(closed))
+        if absent:
+            parts.append("не было запущено: " + ", ".join(absent))
+        return "; ".join(parts)
+
+    def spawn_overlay(self, spec: dict):
+        # Управляющий файл: пока он есть — окно на экране. Удалили — окно закрылось само.
+        ctl_dir = self.data_dir() / "overlay"
+        ctl_dir.mkdir(exist_ok=True)
+        control = ctl_dir / f"{uuid.uuid4().hex}.active"
+        control.touch()
+        spec = {**spec, "parent_pid": os.getpid(), "control_file": str(control)}
+        cmd, cwd = overlay_command(spec)
+        proc = subprocess.Popen(cmd, cwd=cwd, creationflags=CREATE_NO_WINDOW, close_fds=True)
+        return _OverlayProcess(proc, control)
+
+    def shutdown(self, reboot: bool) -> None:
+        # /f — закрыть программы без вопросов (ученики предупреждены отсчётом)
+        subprocess.run(["shutdown", "/r" if reboot else "/s", "/f", "/t", "0"],
+                       creationflags=CREATE_NO_WINDOW, timeout=30)
+
+    def is_hidden(self, path: Path) -> bool:
+        if path.name.startswith("."):
+            return True
+        attrs = kernel32.GetFileAttributesW(str(path))
+        if attrs == INVALID_FILE_ATTRIBUTES:
+            return False
+        return bool(attrs & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM))
 
     # ---------- Диалоги ----------
 

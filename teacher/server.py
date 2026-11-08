@@ -33,11 +33,14 @@ from aiohttp import WSMsgType, web
 
 from shared.protocol import (
     PROTOCOL_VERSION,
+    Action,
     Message,
     MsgType,
     ProtocolError,
     validate_command,
+    validate_process_name,
 )
+from shared.search import SEARCH_ENGINES, to_url
 from teacher.netutil import is_loopback, primary_ipv4
 from teacher.pairing import PairRequestManager
 from teacher.udp_discovery import start_responder
@@ -61,6 +64,8 @@ class AgentConn:
     agent_version: str = ""
     browsers: list[str] = field(default_factory=list)
     pending_files: int = 0
+    screen: str | None = None      # что сейчас на экране: lock / message / countdown
+    shutdown: str | None = None    # запланировано: shutdown / reboot
     connected_at: float = field(default_factory=time.time)
 
 
@@ -80,6 +85,13 @@ class TeacherServer:
         self.port: int = storage.port  # реальный порт уточняется после запуска
         self._runner: web.AppRunner | None = None
         self._udp = None
+        # Ноутбуки, на которых учитель включил «Внимание на учителя» (номер → текст).
+        # Если ноутбук переподключился (перезагрузили, перелогинились) — включаем снова.
+        self.locked: dict[str, str] = {}
+        # Обработчики для следующих этапов (сбор файлов, конец урока)
+        self.on_agent_connected: list = []
+        self.on_agent_report: list = []
+        self.on_settings_changed: list = []
 
     # ================= Запуск / остановка =================
 
@@ -96,6 +108,7 @@ class TeacherServer:
             web.post("/ui/api/pair-requests/{id}/reject", self.handle_ui_reject),
             web.delete("/ui/api/laptops/{number}", self.handle_ui_unpair),
             web.post("/ui/api/commands", self.handle_ui_command),
+            web.put("/ui/api/settings", self.handle_ui_settings),
             web.get("/ui/ws", self.handle_ui_ws),
         ])
         app.router.add_static("/ui/static/", WEB_DIR)
@@ -219,8 +232,8 @@ class TeacherServer:
             hostname=str(p.get("hostname", ""))[:100],
             agent_version=str(p.get("agent_version", ""))[:20],
             browsers=[str(b) for b in p.get("browsers", [])][:10],
-            pending_files=int(p.get("pending_files", 0) or 0),
         )
+        self._apply_status(conn, p)
         # Второе подключение того же ноутбука вытесняет старое
         old = self.agents.get(number)
         if old:
@@ -229,6 +242,10 @@ class TeacherServer:
         self.storage.update_laptop_info(number, username=conn.username, hostname=conn.hostname, last_seen=time.time())
         await ws.send_str(Message(MsgType.WELCOME, {"laptop_number": number, "server_time": time.time()}).to_json())
         log.info("Ноутбук %s на связи (%s, пользователь %s)", number, conn.ip, conn.username)
+        if number in self.locked and conn.screen != "lock":
+            await self._send_to(conn, Action.LOCK_SCREEN, {"text": self.locked[number]})
+        for handler in self.on_agent_connected:
+            await handler(conn)
         await self.broadcast_state()
 
         try:
@@ -249,13 +266,34 @@ class TeacherServer:
                 await self.broadcast_state()
         return ws
 
+    @staticmethod
+    def _apply_status(conn: AgentConn, p: dict) -> None:
+        if "pending_files" in p:
+            try:
+                conn.pending_files = max(0, int(p.get("pending_files") or 0))
+            except (TypeError, ValueError):
+                pass
+        if "screen" in p:
+            conn.screen = p["screen"] if p["screen"] in ("lock", "message", "countdown") else None
+        if "shutdown" in p:
+            conn.shutdown = p["shutdown"] if p["shutdown"] in ("shutdown", "reboot") else None
+        if "username" in p:
+            conn.username = str(p["username"])[:100]
+
+    async def _send_to(self, conn: AgentConn, action: Action, params: dict) -> None:
+        msg = Message(MsgType.COMMAND, {"command_id": uuid.uuid4().hex, "action": action.value, "params": params})
+        try:
+            await conn.ws.send_str(msg.to_json())
+        except ConnectionError:
+            pass
+
     async def _on_agent_message(self, conn: AgentConn, msg: Message) -> None:
         if msg.type == MsgType.STATUS:
-            if "pending_files" in msg.payload:
-                conn.pending_files = int(msg.payload.get("pending_files") or 0)
-            if "username" in msg.payload:
-                conn.username = str(msg.payload["username"])[:100]
+            self._apply_status(conn, msg.payload)
             await self.broadcast_state()
+        elif msg.type == MsgType.REPORT:
+            for handler in self.on_agent_report:
+                await handler(conn, msg.payload)
         elif msg.type == MsgType.RESULT:
             p = msg.payload
             await self.broadcast_event({
@@ -271,6 +309,11 @@ class TeacherServer:
         Отправить команду ноутбукам. targets — список номеров или "all".
         Команды не копятся для офлайн-ноутбуков: открывать сайт через час не нужно.
         """
+        if action == Action.OPEN_URLS.value and isinstance(params.get("urls"), list):
+            # Строки учителя: адреса открываем как есть, остальное — поиск
+            engine = params.get("engine") or self.storage.settings().get("search_engine", "yandex")
+            params = {**params, "urls": [to_url(str(u), engine) for u in params["urls"] if str(u).strip()]}
+            params.pop("engine", None)
         act, params = validate_command(action, params)
         if targets == "all":
             numbers = sorted(self.storage.laptops().keys(), key=_sort_key)
@@ -289,6 +332,12 @@ class TeacherServer:
                 statuses[n] = "sent"
             except ConnectionError:
                 statuses[n] = "offline"
+        # Запоминаем, где включена заставка, чтобы вернуть её после переподключения
+        for n in numbers:
+            if act is Action.LOCK_SCREEN:
+                self.locked[n] = params["text"]
+            elif act is Action.UNLOCK_SCREEN:
+                self.locked.pop(n, None)
         log.info("Команда %s %s → %s", act.value, params, statuses)
         return {"command_id": command_id, "statuses": statuses}
 
@@ -313,13 +362,65 @@ class TeacherServer:
                 "agent_version": conn.agent_version if conn else "",
                 "browsers": conn.browsers if conn else [],
                 "pending_files": conn.pending_files if conn else None,
+                "screen": conn.screen if conn else None,
+                "locked": number in self.locked,
+                "shutdown": conn.shutdown if conn else None,
                 "last_seen": info.get("last_seen"),
             })
         return {
             "laptops": laptops,
             "pair_requests": [r.public() for r in self.pairing.pending()],
             "teacher": {"ip": self.host_ip_fn(), "port": self.port, "teacher_id": self.storage.teacher_id},
+            "settings": self.public_settings(),
         }
+
+    def public_settings(self) -> dict[str, Any]:
+        st = self.storage.settings()
+        return {k: st.get(k) for k in ("search_engine", "apps", "lesson_sets")} | {
+            "search_engines": {k: v[0] for k, v in SEARCH_ENGINES.items()},
+        }
+
+    async def handle_ui_settings(self, request: web.Request) -> web.Response:
+        """Сохранить настройки (только известные поля, с проверкой)."""
+        body = await request.json()
+        updates: dict[str, Any] = {}
+        try:
+            if "search_engine" in body:
+                if body["search_engine"] not in SEARCH_ENGINES:
+                    raise ValueError("Неизвестная поисковая система")
+                updates["search_engine"] = body["search_engine"]
+            if "apps" in body:
+                apps = []
+                for a in body["apps"][:30]:
+                    title = str(a.get("title", "")).strip()[:60]
+                    process = validate_process_name(str(a.get("process", "")))
+                    apps.append({"title": title or process, "process": process})
+                updates["apps"] = apps
+            if "lesson_sets" in body:
+                sets = []
+                for ls in body["lesson_sets"][:100]:
+                    name = str(ls.get("name", "")).strip()[:60]
+                    items = [str(i).strip()[:500] for i in ls.get("items", []) if str(i).strip()][:20]
+                    if not name or not items:
+                        raise ValueError("У набора должно быть название и хотя бы один адрес")
+                    browser = ls.get("browser", "default")
+                    if browser not in ("default", "chrome", "yandex", "edge"):
+                        raise ValueError("Неизвестный браузер")
+                    sets.append({"id": str(ls.get("id") or uuid.uuid4().hex)[:40], "name": name,
+                                 "items": items, "browser": browser})
+                updates["lesson_sets"] = sets
+            updates |= await self.validate_extra_settings(body)
+        except (ValueError, ProtocolError, AttributeError, TypeError) as e:
+            return web.json_response({"error": str(e)}, status=400)
+        self.storage.update_settings(**updates)
+        await self.broadcast_state()
+        for handler in self.on_settings_changed:
+            await handler(updates)
+        return web.json_response({"ok": True})
+
+    async def validate_extra_settings(self, body: dict) -> dict:
+        """Переопределяется/дополняется на следующих этапах."""
+        return {}
 
     async def handle_ui_state(self, request: web.Request) -> web.Response:
         return web.json_response(self.state_snapshot())

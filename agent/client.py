@@ -8,11 +8,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-from typing import Callable
 
 import aiohttp
 
 from agent import __version__
+from agent.core import AgentCore
 from agent.discovery import broadcast_discover, find_teacher
 from agent.platform.base import Platform
 from agent.state import AgentState
@@ -57,13 +57,15 @@ class AgentClient:
         *,
         use_mdns: bool = True,
         backoff: Backoff | None = None,
-        pending_files: Callable[[], int] = lambda: 0,
+        core: AgentCore | None = None,
     ):
         self.platform = platform
         self.state = state
         self.use_mdns = use_mdns
         self.backoff = backoff or Backoff()
-        self.pending_files = pending_files
+        self.core = core or AgentCore(platform)
+        self.core.client = self  # ядру (сбору файлов) нужен адрес учителя и способ слать статусы
+        self.base_url: str | None = None  # http://ip:порт учителя, пока есть связь
         self.connected = asyncio.Event()
         self.unpaired = False   # учитель отвязал ноутбук — работать дальше нет смысла
         self._ws: aiohttp.ClientWebSocketResponse | None = None
@@ -73,6 +75,14 @@ class AgentClient:
 
     async def run(self) -> None:
         """Работает, пока не вызвали stop() или учитель не отвязал ноутбук."""
+        background = self.core.start_background()
+        try:
+            await self._run_loop()
+        finally:
+            for t in background:
+                t.cancel()
+
+    async def _run_loop(self) -> None:
         while not self._stop and not self.unpaired:
             connected_ok = False
             for host, port in await self._candidates():
@@ -151,7 +161,9 @@ class AgentClient:
                     self.state.save(self.platform)
                 log.info("На связи с учителем %s:%s как ноутбук %s", host, port, self.state.laptop_number)
                 self.backoff.reset()
+                self.base_url = f"http://{host}:{port}"
                 self.connected.set()
+                self.core.on_connected()
 
                 async for raw in ws:
                     if raw.type != aiohttp.WSMsgType.TEXT:
@@ -163,10 +175,13 @@ class AgentClient:
                         continue
                     if msg.type == MsgType.COMMAND:
                         asyncio.create_task(self._handle_command(ws, msg))
+                    elif msg.type == MsgType.CONFIG:
+                        self.core.apply_config(msg.payload)
                 self._check_close_code(ws)
                 return True
             finally:
                 self.connected.clear()
+                self.base_url = None
                 self._ws = None
                 if not ws.closed:
                     await ws.close()
@@ -185,13 +200,23 @@ class AgentClient:
             "hostname": self.platform.hostname(),
             "agent_version": __version__,
             "browsers": self.platform.detect_browsers(),
-            "pending_files": self.pending_files(),
+            **self.core.status(),
         }
 
+    async def send(self, mtype: MsgType, payload: dict) -> bool:
+        """Отправить сообщение учителю, если есть связь."""
+        ws = self._ws
+        if ws is None or ws.closed:
+            return False
+        try:
+            await ws.send_str(Message(mtype, payload).to_json())
+            return True
+        except (ConnectionError, RuntimeError):
+            return False
+
     async def send_status(self) -> None:
-        """Сообщить учителю свежий статус (используется очередью файлов на этапе 3)."""
-        if self._ws is not None and not self._ws.closed:
-            await self._ws.send_str(Message(MsgType.STATUS, {"pending_files": self.pending_files()}).to_json())
+        """Сообщить учителю свежий статус (экран, выключение, файлы в очереди)."""
+        await self.send(MsgType.STATUS, self.core.status())
 
     # ---------- Команды ----------
 
@@ -210,10 +235,8 @@ class AgentClient:
             result = {"command_id": command_id, "ok": False, "message": f"ошибка: {e}"}
         if not ws.closed:
             await ws.send_str(Message(MsgType.RESULT, result).to_json())
+        await self.send_status()
 
     async def _execute(self, action: Action, params: dict) -> str:
-        # Действия ОС выполняем в отдельном потоке, чтобы не блокировать связь
-        if action is Action.OPEN_URLS:
-            return await asyncio.to_thread(self.platform.open_urls, params["urls"], params["browser"])
-        raise ProtocolError(f"Действие не поддерживается: {action}")
+        return await self.core.execute(action, params)
 

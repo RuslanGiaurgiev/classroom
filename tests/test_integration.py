@@ -76,12 +76,11 @@ async def stop_agent(client, task):
 
 async def test_pair_connect_status_and_open_url(teacher, tmp_path):
     platform, client, task = await start_agent(teacher, tmp_path, "3", username="Маша", browsers=["yandex"])
-    snap = teacher.state_snapshot()
-    assert snap["laptops"] == [{
+    lap = teacher.state_snapshot()["laptops"][0]
+    assert {k: lap[k] for k in ("number", "online", "username", "hostname", "ip", "browsers", "pending_files", "screen")} == {
         "number": "3", "online": True, "username": "Маша", "hostname": "PC-3", "ip": "127.0.0.1",
-        "agent_version": snap["laptops"][0]["agent_version"], "browsers": ["yandex"],
-        "pending_files": 0, "last_seen": snap["laptops"][0]["last_seen"],
-    }]
+        "browsers": ["yandex"], "pending_files": 0, "screen": None,
+    }
 
     # Панель подписана на события — проверим, что придёт результат команды
     events = []

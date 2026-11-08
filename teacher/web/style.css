@@ -89,3 +89,26 @@ textarea { width: 100%; resize: vertical; }
 .req .match { font: 700 34px/1 ui-monospace, Menlo, monospace; color: var(--accent); min-width: 56px; text-align: center; }
 .req-info { flex: 1; min-width: 160px; }
 .req-num { width: 90px; font-size: 16px; }
+/* --- Вкладки и управление (этап 2) --- */
+.tabs { display: flex; gap: 4px; margin-left: 16px; }
+.tab { font: inherit; border: 0; background: transparent; color: var(--muted); padding: 6px 12px; border-radius: 6px; cursor: pointer; }
+.tab.active { background: var(--bg); color: var(--text); font-weight: 600; }
+.badge { background: var(--danger); color: #fff; border-radius: 10px; padding: 0 6px; font-size: 11px; }
+.target-bar { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.btn.big { padding: 9px 18px; font-weight: 600; }
+.end-lesson { background: #1f9d55; border-color: #1f9d55; color: #fff; }
+.btn.danger { color: var(--danger); }
+.controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 12px; }
+.ctl { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: var(--bg); }
+.ctl-title { font-weight: 600; margin-bottom: 4px; }
+.ctl input[type=text] { flex: 1; min-width: 120px; }
+.sets { display: grid; gap: 6px; margin-top: 10px; }
+.set { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.small { font-size: 12px; }
+.badges { display: flex; gap: 4px; flex-wrap: wrap; min-height: 4px; }
+.pill { font-size: 11px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 1px 7px; }
+.pill.warn { color: var(--danger); border-color: var(--danger); }
+.card.offline { opacity: .65; }
+.card-actions { margin-top: 2px; }
+#appsEditor .row input { flex: 1; }
+.tabpage[hidden] { display: none; }

@@ -71,7 +71,13 @@ def main(argv: list[str] | None = None, platform: Platform | None = None) -> int
     parser = argparse.ArgumentParser(description="Агент компьютерного класса")
     parser.add_argument("--install", action="store_true")
     parser.add_argument("--uninstall", action="store_true")
+    parser.add_argument("--overlay", help=argparse.SUPPRESS)  # служебный: полноэкранное окно
     args = parser.parse_args(argv)
+
+    if args.overlay:
+        # Отдельный процесс полноэкранного окна — без логов, mutex и сети
+        from agent.overlay_window import decode_spec, run_overlay
+        return run_overlay(decode_spec(args.overlay))
 
     platform = platform or get_platform()
     setup_logging(platform)

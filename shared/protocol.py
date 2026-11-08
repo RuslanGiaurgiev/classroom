@@ -46,16 +46,39 @@ class MsgType(str, Enum):
     # Агент → учитель
     HELLO = "hello"          # первое сообщение после подключения
     STATUS = "status"        # обновление статуса (например, сколько файлов ждёт отправки)
+    REPORT = "report"        # отчёт о сборе/очистке файлов (этап «Конец урока»)
     RESULT = "result"        # результат выполнения команды
     # Учитель → агент
     WELCOME = "welcome"      # ответ на hello
     COMMAND = "command"      # команда из фиксированного списка
+    CONFIG = "config"        # настройки сбора файлов (папки, лимит размера)
     ERROR = "error"          # ошибка (например, несовместимая версия)
 
 
 class Action(str, Enum):
-    """Фиксированный список действий, которые агент умеет выполнять."""
-    OPEN_URLS = "open_urls"
+    """Фиксированный список действий, которые агент умеет выполнять. Других не бывает."""
+    OPEN_URLS = "open_urls"              # открыть сайты/поиск
+    CLOSE_APPS = "close_apps"            # закрыть программы по имени процесса
+    SHOW_MESSAGE = "show_message"        # сообщение на весь экран
+    HIDE_MESSAGE = "hide_message"
+    LOCK_SCREEN = "lock_screen"          # «Внимание на учителя»
+    UNLOCK_SCREEN = "unlock_screen"
+    SHUTDOWN = "shutdown"                # выключить (с предупреждением)
+    REBOOT = "reboot"                    # перезагрузить (с предупреждением)
+    CANCEL_SHUTDOWN = "cancel_shutdown"
+    COLLECT_NOW = "collect_now"          # собрать файлы прямо сейчас
+    CLEANUP = "cleanup"                  # «Конец урока»: убрать в корзину только подтверждённые файлы
+
+
+# Процессы, которые нельзя закрывать ни при каких настройках
+PROTECTED_PROCESSES = {
+    "agent.exe", "explorer.exe", "csrss.exe", "winlogon.exe", "lsass.exe", "svchost.exe",
+    "services.exe", "smss.exe", "wininit.exe", "dwm.exe", "system", "sihost.exe",
+    "fontdrvhost.exe", "ctfmon.exe", "runtimebroker.exe", "searchhost.exe", "logonui.exe",
+    "startmenuexperiencehost.exe", "shellexperiencehost.exe", "textinputhost.exe",
+}
+_PROCESS_RE = re.compile(r'^[^\\/:*?"<>|]{1,80}\.exe$', re.IGNORECASE)
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class Browser(str, Enum):
@@ -151,6 +174,31 @@ def validate_url(url: str) -> str:
     return url
 
 
+def _text(params: dict, key: str, max_len: int, default: str | None = None) -> str:
+    value = params.get(key, default)
+    if not isinstance(value, str) or not value.strip():
+        raise ProtocolError("Нужен текст")
+    if len(value) > max_len:
+        raise ProtocolError(f"Текст слишком длинный (больше {max_len} символов)")
+    return value.strip()
+
+
+def _int(params: dict, key: str, lo: int, hi: int, default: int) -> int:
+    value = params.get(key, default)
+    if not isinstance(value, int) or isinstance(value, bool) or not lo <= value <= hi:
+        raise ProtocolError(f"{key}: нужно число от {lo} до {hi}")
+    return value
+
+
+def validate_process_name(name: str) -> str:
+    if not isinstance(name, str) or not _PROCESS_RE.match(name.strip()):
+        raise ProtocolError(f"Некорректное имя программы: {name!r} (нужно вида chrome.exe)")
+    name = name.strip()
+    if name.lower() in PROTECTED_PROCESSES:
+        raise ProtocolError(f"Эту программу закрывать нельзя: {name}")
+    return name
+
+
 def validate_command(action: str, params: dict[str, Any]) -> tuple[Action, dict[str, Any]]:
     """
     Проверяет команду и возвращает нормализованные параметры.
@@ -175,4 +223,33 @@ def validate_command(action: str, params: dict[str, Any]) -> tuple[Action, dict[
             raise ProtocolError(f"Неизвестный браузер: {params.get('browser')!r}") from e
         return act, {"urls": [validate_url(u) for u in urls], "browser": browser.value}
 
-    raise ProtocolError(f"Действие не поддерживается: {act}")  # pragma: no cover
+    if act is Action.CLOSE_APPS:
+        names = params.get("process_names")
+        if not isinstance(names, list) or not 1 <= len(names) <= 20:
+            raise ProtocolError("Нужен список программ (от 1 до 20)")
+        return act, {"process_names": [validate_process_name(n) for n in names]}
+
+    if act is Action.SHOW_MESSAGE:
+        # seconds = 0 — висит, пока учитель не уберёт
+        return act, {"text": _text(params, "text", 500), "seconds": _int(params, "seconds", 0, 3600, 0)}
+
+    if act is Action.LOCK_SCREEN:
+        return act, {"text": _text(params, "text", 200, "Внимание на учителя!")}
+
+    if act in (Action.SHUTDOWN, Action.REBOOT):
+        return act, {"seconds": _int(params, "seconds", 10, 300, 30)}
+
+    if act is Action.CLEANUP:
+        # Список SHA-256 файлов, получение которых подтвердил учитель. Удалять можно только их.
+        shas = params.get("confirmed_sha256")
+        if not isinstance(shas, list) or len(shas) > 100_000:
+            raise ProtocolError("Нужен список подтверждённых файлов")
+        clean = []
+        for h in shas:
+            if not isinstance(h, str) or not _SHA256_RE.match(h):
+                raise ProtocolError("Некорректный SHA-256 в списке")
+            clean.append(h)
+        return act, {"confirmed_sha256": clean}
+
+    # Команды без параметров
+    return act, {}

@@ -22,6 +22,20 @@ from typing import Any
 
 from shared.protocol import DEFAULT_PORT
 
+# Настройки по умолчанию (учитель меняет их в панели)
+DEFAULT_SETTINGS: dict[str, Any] = {
+    "search_engine": "yandex",
+    # Программы, которые можно закрывать кнопкой «Закрыть программу»
+    "apps": [
+        {"title": "Google Chrome", "process": "chrome.exe"},
+        {"title": "Яндекс Браузер", "process": "browser.exe"},
+        {"title": "Microsoft Edge", "process": "msedge.exe"},
+        {"title": "Scratch", "process": "Scratch 3.exe"},
+    ],
+    # Наборы вкладок урока: {"id", "name", "items": [адреса или запросы], "browser"}
+    "lesson_sets": [],
+}
+
 
 def default_data_dir() -> Path:
     env = os.environ.get("CLASSROOM_TEACHER_DATA")
@@ -63,6 +77,8 @@ class Storage:
         data.setdefault("teacher_id", uuid.uuid4().hex[:12])
         data.setdefault("settings", {})
         data["settings"].setdefault("port", DEFAULT_PORT)
+        for k, v in DEFAULT_SETTINGS.items():
+            data["settings"].setdefault(k, json.loads(json.dumps(v)))
         data.setdefault("laptops", {})  # номер (строка) -> данные
         if not self.path.exists():
             atomic_write_json(self.path, data)
@@ -81,6 +97,15 @@ class Storage:
     @property
     def port(self) -> int:
         return int(self._data["settings"]["port"])
+
+    def settings(self) -> dict[str, Any]:
+        with self._lock:
+            return json.loads(json.dumps(self._data["settings"]))
+
+    def update_settings(self, **values: Any) -> None:
+        with self._lock:
+            self._data["settings"].update(values)
+            self.save()
 
     def get_ui_token(self) -> str:
         """

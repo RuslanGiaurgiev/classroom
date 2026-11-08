@@ -14,6 +14,23 @@ from shared.protocol import BROWSER_TITLES, Browser
 log = logging.getLogger(__name__)
 
 
+class FakeOverlay:
+    """Имитация окна-процесса: тест может «закрыть» его через kill()."""
+
+    def __init__(self, spec: dict):
+        self.spec = spec
+        self.returncode: int | None = None
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.returncode = -15
+
+    def kill(self) -> None:  # «ребёнок закрыл окно»
+        self.returncode = 1
+
+
 class FakePlatform(Platform):
     def __init__(
         self,
@@ -32,6 +49,9 @@ class FakePlatform(Platform):
         self.actions: list[tuple] = []  # журнал выполненных действий (для тестов)
         self.autorun: Path | None = None
         self.infos: list[tuple[str, str]] = []
+        self.overlays: list[FakeOverlay] = []
+        self.running_processes: set[str] = {"chrome.exe", "msedge.exe"}
+        self.shutdowns: list[bool] = []
 
     def username(self) -> str:
         return self._username
@@ -43,7 +63,7 @@ class FakePlatform(Platform):
         return self._data_dir
 
     def known_folder(self, name: str) -> Path:
-        mapping = {"downloads": "Downloads", "desktop": "Desktop"}
+        mapping = {"downloads": "Downloads", "desktop": "Desktop", "documents": "Documents"}
         p = self._data_dir / "home" / mapping[name]
         p.mkdir(parents=True, exist_ok=True)
         return p
@@ -77,6 +97,30 @@ class FakePlatform(Platform):
             msg = f"открыто в: {BROWSER_TITLES[Browser(browser)]}"
         log.info("[%s] открыть %s (%s) → %s", self.label, urls, browser, msg)
         return msg
+
+    def close_processes(self, names: list[str]) -> str:
+        self.actions.append(("close_processes", list(names)))
+        closed = [n for n in names if n.lower() in self.running_processes]
+        self.running_processes -= {n.lower() for n in closed}
+        log.info("[%s] закрыть %s → закрыто %s", self.label, names, closed)
+        return "закрыто: " + (", ".join(closed) or "ничего не было запущено")
+
+    def spawn_overlay(self, spec: dict) -> FakeOverlay:
+        ov = FakeOverlay(spec)
+        self.overlays.append(ov)
+        log.info("[%s] на экране: %s «%s»", self.label, spec.get("mode"), spec.get("text", ""))
+        return ov
+
+    def current_overlay(self) -> FakeOverlay | None:
+        live = [o for o in self.overlays if o.poll() is None]
+        return live[-1] if live else None
+
+    def shutdown(self, reboot: bool) -> None:
+        self.shutdowns.append(reboot)
+        log.info("[%s] %s", self.label, "ПЕРЕЗАГРУЗКА" if reboot else "ВЫКЛЮЧЕНИЕ")
+
+    def is_hidden(self, path: Path) -> bool:
+        return path.name.startswith(".")
 
     def run_pairing_window(self, flow):
         import asyncio
