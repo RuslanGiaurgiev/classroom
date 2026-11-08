@@ -2,6 +2,7 @@
 import sys
 import xml.etree.ElementTree as ET
 
+sys.stdout.reconfigure(encoding="utf-8")
 root = ET.parse(sys.argv[1]).getroot()
 for case in root.iter("testcase"):
     for bad in list(case.findall("failure")) + list(case.findall("error")):

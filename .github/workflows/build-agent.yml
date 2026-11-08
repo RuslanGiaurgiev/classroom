@@ -9,6 +9,10 @@ on:
   push:
   workflow_dispatch:
 
+env:
+  PYTHONIOENCODING: utf-8   # кириллица в выводе на Windows
+  PYTHONUTF8: "1"
+
 jobs:
   tests-mac:
     name: Тесты (macOS)
