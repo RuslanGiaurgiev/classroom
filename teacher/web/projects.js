@@ -2,7 +2,14 @@
 // настройки сбора и Диска, окно «Конец урока».
 "use strict";
 (function () {
-  const { api, el, log, $ } = App;
+  const { api, el, $ } = App;
+  // Уведомления и окна в стиле приложения (вместо системных alert/confirm/prompt)
+  const note = (text, isError) => App.toast(text, isError ? "error" : "ok");
+  const ask = (text, opts) => App.confirm(text, opts);
+  const askText = (text, value) => {
+    const [title, ...rest] = text.split("\n");
+    return App.prompt(title, value, { label: rest.join(" ") });
+  };
   let proj = { groups: [], unsorted: [], recent: [], active_group: null, root: "" };
   let disk = { has_token: false, state: "", counts: {}, items: [] };
 
@@ -32,17 +39,17 @@
   async function assign(file, studentId) {
     try {
       const r = await api("POST", `/ui/api/files/${file.id}/assign`, { student_id: studentId });
-      log(`«${file.name}» → ${r.student}`);
+      note(`«${file.name}» → ${r.student}`);
       if (r.suggest_alias) {
-        const alias = prompt(`Запомнить написание «${r.suggest_alias}» как вариант имени «${r.student}»?\n` +
+        const alias = await askText(`Запомнить написание «${r.suggest_alias}» как вариант имени «${r.student}»?\n` +
           "Тогда такие файлы будут разбираться сами. Можно исправить слово:", r.suggest_alias);
         if (alias && alias.trim()) {
           const st = allStudents().find((s) => s.id === studentId);
           await api("PUT", `/ui/api/students/${studentId}`, { aliases: [...(st ? st.aliases : []), alias.trim()] });
-          log(`Запомнено: «${alias.trim()}» — это ${r.student}`);
+          note(`Запомнено: «${alias.trim()}» — это ${r.student}`);
         }
       }
-    } catch (e) { log(e.message, true); }
+    } catch (e) { note(e.message, true); }
     reload();
   }
 
@@ -68,8 +75,8 @@
     return box;
   }
 
-  const reveal = (id) => api("POST", `/ui/api/files/${id}/reveal`).catch((e) => log(e.message, true));
-  const openFolder = (which) => api("POST", "/ui/api/open-folder", { which }).catch((e) => log(e.message, true));
+  const reveal = (id) => api("POST", `/ui/api/files/${id}/reveal`).catch((e) => note(e.message, true));
+  const openFolder = (which) => api("POST", "/ui/api/open-folder", { which }).catch((e) => note(e.message, true));
 
   // ---------- Отрисовка вкладки ----------
   function renderProjects() {
@@ -103,12 +110,12 @@
       show.onclick = () => reveal(f.id);
       const del = el("button", { className: "btn small danger", textContent: "Удалить", title: "Это мусор — убрать в Корзину Mac" });
       del.onclick = async () => {
-        if (sameName[f.name] > 1 && confirm(`Удалить ВСЕ файлы «${f.name}» из Неразобранного (${sameName[f.name]} шт.)?\nОни уйдут в Корзину Mac.`)) {
+        if (sameName[f.name] > 1 && await ask(`Удалить ВСЕ файлы «${f.name}» из Неразобранного (${sameName[f.name]} шт.)?\nОни уйдут в Корзину Mac.`)) {
           const r = await api("POST", "/ui/api/files/delete-unsorted-by-name", { name: f.name });
-          log(`Удалено в Корзину: ${r.deleted} × «${f.name}»`);
-        } else if (sameName[f.name] === 1 && confirm(`Удалить «${f.name}»? Файл уйдёт в Корзину Mac.`)) {
+          note(`Удалено в Корзину: ${r.deleted} × «${f.name}»`);
+        } else if (sameName[f.name] === 1 && await ask(`Удалить «${f.name}»? Файл уйдёт в Корзину Mac.`)) {
           await api("POST", `/ui/api/files/${f.id}/delete`);
-          log(`«${f.name}» удалён в Корзину`);
+          note(`«${f.name}» удалён в Корзину`);
         } else return;
         reload();
       };
@@ -116,13 +123,13 @@
         title: "Больше никогда не принимать такие файлы (например, журналы программ)" });
       ign.onclick = async () => {
         const ext = f.name.includes(".") ? "*." + f.name.split(".").pop().toLowerCase() : f.name.toLowerCase();
-        const pattern = prompt("Больше не принимать файлы по шаблону (можно исправить):\n" +
+        const pattern = await askText("Больше не принимать файлы по шаблону (можно исправить):\n" +
           "*.dpapi — все файлы с таким расширением; agent-errors.dpapi — только это имя; logs/ — всё из папки logs", ext);
         if (!pattern) return;
         try {
           const r = await api("POST", "/ui/api/ignore", { pattern });
-          log(`Игнорируются файлы «${r.pattern}». Убрано из Неразобранного: ${r.removed}`);
-        } catch (e) { alert(e.message); }
+          note(`Игнорируются файлы «${r.pattern}». Убрано из Неразобранного: ${r.removed}`);
+        } catch (e) { note(e.message, true); }
         reload();
       };
       uns.append(el("div", { className: "file-row" },
@@ -176,8 +183,8 @@
     for (const g of proj.groups) sel.append(el("option", { value: g.id }, g.name));
     sel.value = proj.active_group || "";
     sel.onchange = async () => {
-      try { await api("PUT", "/ui/api/settings", { active_group: sel.value ? Number(sel.value) : null }); log("Текущая группа сохранена"); }
-      catch (e) { log(e.message, true); }
+      try { await api("PUT", "/ui/api/settings", { active_group: sel.value ? Number(sel.value) : null }); note("Текущая группа сохранена"); }
+      catch (e) { note(e.message, true); }
       reload();
     };
     sec.append(el("div", { className: "row" }, el("b", {}, "Сейчас занимается:"), sel,
@@ -187,12 +194,12 @@
       const box = el("div", { className: "group" + (g.id === proj.active_group ? " active" : "") });
       const ren = el("button", { className: "btn small", textContent: "Переименовать" });
       ren.onclick = async () => {
-        const name = prompt("Новое название группы:", g.name);
-        if (name) { try { await api("PUT", `/ui/api/groups/${g.id}`, { name }); } catch (e) { alert(e.message); } reload(); }
+        const name = await askText("Новое название группы:", g.name);
+        if (name) { try { await api("PUT", `/ui/api/groups/${g.id}`, { name }); } catch (e) { note(e.message, true); } reload(); }
       };
       const del = el("button", { className: "btn small danger", textContent: "Удалить группу" });
       del.onclick = async () => {
-        if (!confirm(`Удалить группу «${g.name}» и её список учеников? Файлы на диске останутся.`)) return;
+        if (!await ask(`Удалить группу «${g.name}» и её список учеников? Файлы на диске останутся.`)) return;
         await api("DELETE", `/ui/api/groups/${g.id}`); reload();
       };
       box.append(el("div", { className: "row" }, el("h3", {}, g.name), el("span", { className: "muted small" }, `${g.students.length} уч.`),
@@ -201,16 +208,16 @@
       for (const s of g.students) {
         const edit = el("button", { className: "btn small", textContent: "✎", title: "Изменить имя и варианты написания" });
         edit.onclick = async () => {
-          const name = prompt("Имя ученика:", s.name);
+          const name = await askText("Имя ученика:", s.name);
           if (name == null) return;
-          const al = prompt("Варианты написания через запятую (например: Masha, Машуня):", s.aliases.join(", "));
+          const al = await askText("Варианты написания через запятую (например: Masha, Машуня):", s.aliases.join(", "));
           if (al == null) return;
           try { await api("PUT", `/ui/api/students/${s.id}`, { name, aliases: al.split(",").map((x) => x.trim()).filter(Boolean) }); }
-          catch (e) { alert(e.message); }
+          catch (e) { note(e.message, true); }
           reload();
         };
         const rm = el("button", { className: "btn small danger", textContent: "✕", title: "Удалить ученика" });
-        rm.onclick = async () => { if (confirm(`Удалить ученика «${s.name}»?`)) { await api("DELETE", `/ui/api/students/${s.id}`); reload(); } };
+        rm.onclick = async () => { if (await ask(`Удалить ученика «${s.name}»?`)) { await api("DELETE", `/ui/api/students/${s.id}`); reload(); } };
         list.append(el("div", { className: "student" }, el("b", {}, s.name),
           s.aliases.length ? el("span", { className: "muted small" }, " (" + s.aliases.join(", ") + ")") : null, edit, rm));
       }
@@ -221,9 +228,9 @@
         if (!ta.value.trim()) return;
         try {
           const r = await api("POST", "/ui/api/students/bulk", { group_id: g.id, text: ta.value });
-          log(`Добавлено учеников: ${r.added}`);
-          if (r.errors.length) alert(r.errors.join("\n"));
-        } catch (e) { alert(e.message); }
+          note(`Добавлено учеников: ${r.added}`);
+          if (r.errors.length) note(r.errors.join("; "), true);
+        } catch (e) { note(e.message, true); }
         reload();
       };
       box.append(el("div", { className: "row" }, ta, add));
@@ -233,7 +240,7 @@
     const gadd = el("button", { className: "btn primary", textContent: "+ Группа" });
     gadd.onclick = async () => {
       if (!gname.value.trim()) return;
-      try { await api("POST", "/ui/api/groups", { name: gname.value }); } catch (e) { alert(e.message); }
+      try { await api("POST", "/ui/api/groups", { name: gname.value }); } catch (e) { note(e.message, true); }
       reload();
     };
     sec.append(el("div", { className: "row" }, gname, gadd));
@@ -278,9 +285,9 @@
     save.onclick = async () => {
       try {
         await api("PUT", "/ui/api/settings", { watch_folders: folderDraft, max_file_mb: Number(maxMb.value), projects_root: rootIn.value });
-        log("Настройки сбора сохранены и отправлены на ноутбуки");
+        note("Настройки сбора сохранены и отправлены на ноутбуки");
         folderDraft = null;
-      } catch (e) { alert(e.message); }
+      } catch (e) { note(e.message, true); }
     };
     sec.innerHTML = "";
     sec.append(el("h2", {}, "Сбор проектов"),
@@ -302,8 +309,8 @@
     const sub = el("input", { type: "text", value: d.sub, placeholder: "например, Материалы" });
     const save = el("button", { className: "btn small", textContent: "Сохранить" });
     save.onclick = async () => {
-      try { await api("PUT", "/ui/api/settings", { materials_dest: { base: base.value, sub: sub.value } }); log("Папка материалов сохранена"); folderDraft = null; }
-      catch (e) { alert(e.message); }
+      try { await api("PUT", "/ui/api/settings", { materials_dest: { base: base.value, sub: sub.value } }); note("Папка материалов сохранена"); folderDraft = null; }
+      catch (e) { note(e.message, true); }
     };
     return el("div", {}, el("div", { className: "row" }, el("b", {}, "Материалы урока на ноутбуках:"), base, el("span", {}, "\\"), sub, save),
       el("p", { className: "muted small" }, "Эта папка не собирается как проекты и не очищается «Концом урока»."));
@@ -318,8 +325,8 @@
     for (const p of pats) {
       const rm = el("button", { className: "btn small danger", textContent: "✕", title: "Снова принимать такие файлы" });
       rm.onclick = async () => {
-        try { await api("PUT", "/ui/api/settings", { ignore_patterns: pats.filter((x) => x !== p) }); log(`Правило «${p}» удалено`); folderDraft = null; }
-        catch (e) { alert(e.message); }
+        try { await api("PUT", "/ui/api/settings", { ignore_patterns: pats.filter((x) => x !== p) }); note(`Правило «${p}» удалено`); folderDraft = null; }
+        catch (e) { note(e.message, true); }
       };
       chips.append(el("div", { className: "student" }, el("code", {}, p), rm));
     }
@@ -339,14 +346,14 @@
     const openAuth = el("button", { className: "btn", textContent: "Получить токен" });
     openAuth.onclick = async () => {
       const id = cid.value.trim();
-      if (!/^[0-9a-fA-F]{32}$/.test(id)) { alert("Сначала вставьте ClientID (шаг 3)"); return; }
+      if (!/^[0-9a-fA-F]{32}$/.test(id)) { note("Сначала вставьте ClientID (шаг 3)", true); return; }
       try {
         await api("PUT", "/ui/api/settings", { disk_client_id: id });
         await api("POST", "/ui/api/open-url", { url: `https://oauth.yandex.ru/authorize?response_type=token&client_id=${id}` });
-      } catch (e) { alert(e.message); }
+      } catch (e) { note(e.message, true); }
     };
     const createApp = el("button", { className: "btn", textContent: "Открыть oauth.yandex.ru" });
-    createApp.onclick = () => api("POST", "/ui/api/open-url", { url: "https://oauth.yandex.ru/client/new" }).catch((e) => alert(e.message));
+    createApp.onclick = () => api("POST", "/ui/api/open-url", { url: "https://oauth.yandex.ru/client/new" }).catch((e) => note(e.message, true));
     const tok = el("input", { type: "password", placeholder: disk.has_token ? "токен сохранён в Связке ключей" : "вставьте токен", style: "flex:1" });
     const saveTok = el("button", { className: "btn primary", textContent: "Сохранить токен" });
     const result = el("div", { className: "muted" });
@@ -362,10 +369,10 @@
       catch (e) { result.textContent = e.message; }
     };
     const delTok = el("button", { className: "btn small danger", textContent: "Удалить токен" });
-    delTok.onclick = async () => { if (confirm("Удалить токен Яндекс Диска с этого Mac?")) { await api("DELETE", "/ui/api/disk/token"); reload(); } };
+    delTok.onclick = async () => { if (await ask("Удалить токен Яндекс Диска с этого Mac?")) { await api("DELETE", "/ui/api/disk/token"); reload(); } };
     const rootName = el("input", { type: "text", value: st.disk_root || "Компьютерный класс", style: "flex:1" });
     const saveRoot = el("button", { className: "btn small", textContent: "Сохранить" });
-    saveRoot.onclick = () => api("PUT", "/ui/api/settings", { disk_root: rootName.value }).then(() => log("Папка на Диске сохранена")).catch((e) => alert(e.message));
+    saveRoot.onclick = () => api("PUT", "/ui/api/settings", { disk_root: rootName.value }).then(() => note("Папка на Диске сохранена")).catch((e) => note(e.message, true));
 
     sec.innerHTML = "";
     sec.append(el("h2", {}, "Яндекс Диск"),
@@ -402,27 +409,27 @@
     }
     if (!ev.running) {
       const bad = nums.filter((n) => !["done"].includes(ev.progress[n].stage));
-      log(bad.length ? `Конец урока: на ноутбуках ${bad.join(", ")} очистка не выполнена` : "Конец урока: все ноутбуки собраны и очищены", bad.length > 0);
+      note(bad.length ? `Конец урока: на ноутбуках ${bad.join(", ")} очистка не выполнена` : "Конец урока: все ноутбуки собраны и очищены", bad.length > 0);
     }
   }
 
   $("btnEndLesson").onclick = async () => {
-    const mode = document.querySelector('input[name="target"]:checked').value;
-    const targets = mode === "all" ? "all" : [...document.querySelectorAll(".card.selected .num")].map((x) => x.textContent);
-    if (Array.isArray(targets) && !targets.length) { log("Выберите ноутбуки", true); return; }
-    if (!confirm("Конец урока:\n\n1) с ноутбуков будут собраны все оставшиеся проекты;\n2) после подтверждения получения КАЖДОГО файла " +
-      "отслеживаемые папки будут очищены (файлы уйдут в корзину агента на 7 дней).\n\nЕсли какой-то файл не удалось получить — на этом ноутбуке ничего не удаляется.\n\nПродолжить?")) return;
+    const targets = App.targets();
+    if (Array.isArray(targets) && !targets.length) { note("Выберите ноутбуки", true); return; }
+    if (!await ask("Для: " + App.targetTitle() + "\n\n" +
+      "1) с ноутбуков будут собраны все оставшиеся проекты;\n2) после подтверждения получения КАЖДОГО файла " +
+      "отслеживаемые папки будут очищены (файлы уйдут в корзину агента на 7 дней).\n\nЕсли какой-то файл не удалось получить — на этом ноутбуке ничего не удаляется.", { title: "🏁 Конец урока", okText: "Начать" })) return;
     try {
       await api("POST", "/ui/api/end-lesson", { targets });
       modal.hidden = false;
-    } catch (e) { log(e.message, true); }
+    } catch (e) { note(e.message, true); }
   };
 
   // ---------- Подписки ----------
   const listener = (state) => renderCollectSettings(state);
   listener.onEvent = (m) => {
     if (["projects_changed", "file", "disk_changed"].includes(m.kind)) reload();
-    if (m.kind === "file") log(`Получен файл от ноутбука ${m.number}: ${m.name}`);
+    if (m.kind === "file") App.log(`Получен файл от ноутбука ${m.number}: ${m.name}`);
     if (m.kind === "end_lesson") { modal.hidden = false; renderEndLesson(m); }
   };
   App.onState(listener);

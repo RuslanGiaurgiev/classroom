@@ -128,6 +128,7 @@ class TeacherServer:
             web.post("/ui/api/pair-requests/{id}/approve", self.handle_ui_approve),
             web.post("/ui/api/pair-requests/{id}/reject", self.handle_ui_reject),
             web.delete("/ui/api/laptops/{number}", self.handle_ui_unpair),
+            web.post("/ui/api/laptops/{number}/rename", self.handle_ui_rename),
             web.post("/ui/api/commands", self.handle_ui_command),
             web.put("/ui/api/settings", self.handle_ui_settings),
             web.post("/ui/api/open-url", self.handle_ui_open_url),
@@ -298,10 +299,11 @@ class TeacherServer:
                     continue
                 await self._on_agent_message(conn, msg)
         finally:
-            if self.agents.get(number) is conn:
-                del self.agents[number]
-                self.storage.update_laptop_info(number, last_seen=time.time())
-                log.info("Ноутбук %s отключился", number)
+            # conn.number, а не number: номер могли сменить, пока ноутбук был на связи
+            if self.agents.get(conn.number) is conn:
+                del self.agents[conn.number]
+                self.storage.update_laptop_info(conn.number, last_seen=time.time())
+                log.info("Ноутбук %s отключился", conn.number)
                 await self.broadcast_state()
         return ws
 
@@ -450,7 +452,7 @@ class TeacherServer:
     def public_settings(self) -> dict[str, Any]:
         st = self.storage.settings()
         keys = ("search_engine", "apps", "lesson_sets", "watch_folders", "max_file_mb", "active_group",
-                "name_threshold", "disk_root", "disk_client_id", "ignore_patterns", "materials_dest")
+                "name_threshold", "disk_root", "disk_client_id", "ignore_patterns", "materials_dest", "lock_text")
         return {k: st.get(k) for k in keys} | {
             "search_engines": {k: v[0] for k, v in SEARCH_ENGINES.items()},
             "projects_root": str(self.projects_root()),
@@ -536,6 +538,9 @@ class TeacherServer:
                 if w["base"] == m["base"] and (ms == "" or ms == ws or ws.startswith(ms + "/")):
                     raise ValueError("Папка материалов не может совпадать с папкой сбора проектов или содержать её")
             out["materials_dest"] = {"base": m["base"], "sub": sub}
+        if "lock_text" in body:
+            t = " ".join(str(body["lock_text"]).split())[:200]
+            out["lock_text"] = t or "Внимание на учителя!"
         if "auto_update" in body:
             out["auto_update"] = bool(body["auto_update"])
         if "ignore_patterns" in body:
@@ -621,6 +626,61 @@ class TeacherServer:
         ok = self.pairing.reject(request.match_info["id"])
         await self.broadcast_state()
         return web.json_response({"ok": ok})
+
+    def rename_laptop(self, old: str, new: str, swap: bool = False) -> None:
+        """
+        Сменить номер ноутбука (или поменять два номера местами). Вместе с номером
+        переносится всё, что к нему привязано: история полученных файлов (по ней
+        «Конец урока» решает, что можно убрать), недокачанные файлы, отправленные
+        материалы, заставка, статусы обновления. Ноутбуку ничего сообщать не нужно —
+        учитель узнаёт его по токену.
+        """
+        self.storage.rename_laptop(old, new, swap=swap)
+        tmp = f"__swap__{uuid.uuid4().hex}"
+
+        def move(a: str, b: str) -> None:
+            self.db.q("UPDATE received SET laptop=? WHERE laptop=?", (b, a))
+            pa = self.files.partial_root / f"laptop-{a}"
+            if pa.exists():
+                pa.rename(self.files.partial_root / f"laptop-{b}")
+            for pkg in self.materials.packages.values():
+                if a in pkg["targets"]:
+                    pkg["targets"][b] = pkg["targets"].pop(a)
+            for d in (self.locked, self.updates.status):
+                if a in d:
+                    d[b] = d.pop(a)
+
+        move(old, tmp)
+        move(new, old)  # если new был занят — его данные переезжают на old (обмен)
+        move(tmp, new)
+        for pkg in self.materials.packages.values():
+            self.materials._save(pkg)
+        # Подключения
+        a, b = self.agents.pop(old, None), self.agents.pop(new, None)
+        if a is not None:
+            a.number = new
+            self.agents[new] = a
+        if b is not None:
+            b.number = old
+            self.agents[old] = b
+        log.info("Номер ноутбука %s → %s%s", old, new, " (обмен номерами)" if swap else "")
+
+    async def handle_ui_rename(self, request: web.Request) -> web.Response:
+        old = request.match_info["number"]
+        body = await request.json()
+        new = str(body.get("new_number", "")).strip()
+        if not LAPTOP_NUMBER_RE.match(new):
+            return web.json_response({"error": "Номер: до 10 символов — цифры или буквы"}, status=400)
+        if new == old:
+            return web.json_response({"ok": True})
+        try:
+            self.rename_laptop(old, new, swap=bool(body.get("swap")))
+        except KeyError:
+            return web.json_response({"error": "Ноутбук не найден"}, status=404)
+        except ValueError:
+            return web.json_response({"error": f"Номер {new} уже занят", "busy": True}, status=409)
+        await self.broadcast_state()
+        return web.json_response({"ok": True})
 
     async def handle_ui_unpair(self, request: web.Request) -> web.Response:
         number = request.match_info["number"]

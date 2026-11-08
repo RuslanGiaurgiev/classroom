@@ -51,6 +51,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "auto_update": True,
     # Куда на ноутбуках складывать материалы урока (эта папка не собирается и не очищается)
     "materials_dest": {"base": "desktop", "sub": "Материалы"},
+    # Текст заставки «Внимание на учителя»
+    "lock_text": "Внимание на учителя!",
 }
 
 
@@ -154,6 +156,21 @@ class Storage:
                 "hostname": old.get("hostname", ""),
                 "last_seen": None,
             }
+            self.save()
+
+    def rename_laptop(self, old: str, new: str, swap: bool = False) -> None:
+        """Сменить номер ноутбука. swap=True — если new занят, поменять номера местами."""
+        with self._lock:
+            laptops = self._data["laptops"]
+            if old not in laptops:
+                raise KeyError(old)
+            if new in laptops and not swap:
+                raise ValueError("busy")
+            a = laptops.pop(old)
+            b = laptops.pop(new, None)
+            laptops[new] = a
+            if b is not None:
+                laptops[old] = b
             self.save()
 
     def remove_laptop(self, number: str) -> bool:

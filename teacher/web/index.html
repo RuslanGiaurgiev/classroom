@@ -8,128 +8,62 @@
 </head>
 <body>
   <header class="topbar">
-    <h1>Компьютерный класс</h1>
+    <h1>🏫 Компьютерный класс</h1>
     <nav class="tabs">
       <button class="tab active" data-tab="class">Класс</button>
       <button class="tab" data-tab="projects">Проекты <span class="badge" id="unsortedBadge" hidden></span></button>
       <button class="tab" data-tab="settings">Настройки</button>
     </nav>
     <div class="spacer"></div>
-    <div class="conn" id="conn">подключение…</div>
-    <div class="mac-addr" id="macAddr"></div>
+    <div class="status-chip" id="conn"><span class="dot"></span><span>подключение…</span></div>
   </header>
 
   <!-- ===================== КЛАСС ===================== -->
   <main id="tab-class" class="tabpage">
     <section class="panel requests" id="requestsPanel" hidden>
-      <h2>Новые ноутбуки просят подключения</h2>
-      <p class="muted">Сверьте число с экраном ноутбука, проверьте номер с наклейки и нажмите «Принять».</p>
+      <h2>🆕 Новые ноутбуки просят подключения</h2>
+      <p class="muted small">Сверьте число с экраном ноутбука, проверьте номер с наклейки и нажмите «Принять».</p>
       <div id="requests"></div>
     </section>
 
-    <section class="panel target-bar">
-      <b>Кому:</b>
-      <label><input type="radio" name="target" value="all" checked> всем ноутбукам</label>
-      <label><input type="radio" name="target" value="selected"> только выбранным <span id="selCount">(0)</span></label>
-      <div class="spacer"></div>
-      <button class="btn big end-lesson" id="btnEndLesson" title="Собрать все проекты и очистить папки на ноутбуках">Конец урока</button>
-    </section>
-
-    <section class="panel">
-      <h2>Открыть сайт или найти</h2>
-      <textarea id="urls" rows="2" placeholder="Адрес сайта (scratch.mit.edu) или что найти (раскраски динозавры). Можно несколько строк — каждая откроется в своей вкладке."></textarea>
-      <div class="row">
-        <label>Браузер:
-          <select id="browser">
-            <option value="default">по умолчанию на ноутбуке</option>
-            <option value="chrome">Google Chrome</option>
-            <option value="yandex">Яндекс Браузер</option>
-            <option value="edge">Microsoft Edge</option>
-          </select>
-        </label>
-        <label>Поиск в:
-          <select id="engine"></select>
-        </label>
-        <div class="spacer"></div>
-        <button class="btn" id="btnSaveSet">Сохранить как набор урока</button>
-        <button class="btn primary" id="btnOpen">Открыть</button>
+    <section class="panel toolbar">
+      <div class="target-line">
+        <span class="muted">Действия для:</span>
+        <span class="target-chip" id="targetChip">всех ноутбуков</span>
+        <button class="btn link" id="btnClearSel" hidden>сбросить выбор</button>
+        <span class="muted small" id="selHint">Нажмите на ноутбуки ниже, чтобы выбрать только некоторые</span>
       </div>
-      <div class="sets" id="sets"></div>
-    </section>
-
-    <section class="panel">
-      <h2>Отправить материалы</h2>
-      <div class="row">
-        <button class="btn" id="btnPickFiles">Выбрать файлы…</button>
-        <button class="btn" id="btnPickFolders">Выбрать папку…</button>
-        <span class="muted small" id="matDest"></span>
-        <div class="spacer"></div>
-        <button class="btn primary" id="btnSendMaterials" disabled>Отправить</button>
+      <div class="actions">
+        <button class="action" data-act="open"><span class="ic">🌐</span>Открыть сайт</button>
+        <button class="action" data-act="materials"><span class="ic">📁</span>Материалы</button>
+        <button class="action" data-act="lock" id="actLock"><span class="ic">🔒</span><span>Внимание</span></button>
+        <button class="action" data-act="message"><span class="ic">💬</span>Сообщение</button>
+        <button class="action" data-act="close"><span class="ic">✖️</span>Закрыть программу</button>
+        <button class="action" data-act="power"><span class="ic">⏻</span>Питание</button>
+        <button class="action finish" data-act="endlesson" id="btnEndLesson"><span class="ic">🏁</span>Конец урока</button>
       </div>
-      <div id="matChosen"></div>
-      <div id="matPackages"></div>
+      <div class="mat-strip" id="matStrip"></div>
     </section>
 
     <section class="panel">
-      <h2>Управление</h2>
-      <div class="controls">
-        <div class="ctl">
-          <div class="ctl-title">Внимание на учителя</div>
-          <div class="row">
-            <input type="text" id="lockText" value="Внимание на учителя!" maxlength="200">
-            <button class="btn primary" data-cmd="lock">Включить</button>
-            <button class="btn" data-cmd="unlock">Снять</button>
-          </div>
-        </div>
-        <div class="ctl">
-          <div class="ctl-title">Сообщение на весь экран</div>
-          <div class="row">
-            <input type="text" id="msgText" placeholder="Текст сообщения" maxlength="500">
-            <select id="msgSeconds">
-              <option value="10">10 секунд</option>
-              <option value="30" selected>30 секунд</option>
-              <option value="60">1 минута</option>
-              <option value="300">5 минут</option>
-              <option value="0">пока не уберу</option>
-            </select>
-            <button class="btn primary" data-cmd="message">Показать</button>
-            <button class="btn" data-cmd="hide-message">Убрать</button>
-          </div>
-        </div>
-        <div class="ctl">
-          <div class="ctl-title">Закрыть программу</div>
-          <div class="row">
-            <select id="appSelect"></select>
-            <button class="btn" data-cmd="close-app">Закрыть</button>
-            <button class="btn" data-cmd="close-browsers" title="Chrome, Яндекс Браузер и Edge">Закрыть все браузеры</button>
-          </div>
-        </div>
-        <div class="ctl">
-          <div class="ctl-title">Питание (предупреждение за 30 секунд)</div>
-          <div class="row">
-            <button class="btn danger" data-cmd="shutdown">Выключить</button>
-            <button class="btn danger" data-cmd="reboot">Перезагрузить</button>
-            <button class="btn" data-cmd="cancel-shutdown">Отменить</button>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <section class="panel">
-      <div class="row">
-        <h2>Ноутбуки</h2>
+      <div class="class-head">
+        <h2 style="margin:0">Ноутбуки</h2>
+        <span class="muted small" id="summary"></span>
         <div class="spacer"></div>
-        <span class="muted" id="summary"></span>
-        <label class="selall"><input type="checkbox" id="selectAll"> выбрать все</label>
+        <button class="btn small" id="btnSelectAll">Выбрать все</button>
       </div>
       <div class="grid" id="grid"></div>
-      <p class="empty muted" id="empty" hidden>Пока нет ни одного ноутбука. Чтобы добавить ноутбук,
-        запустите на нём agent.exe — он сам появится вверху в разделе «Новые ноутбуки».</p>
+      <div class="empty muted" id="empty" hidden>
+        <div style="font-size:32px">💻</div>
+        Пока нет ни одного ноутбука.<br>Запустите на ноутбуке <b>agent.exe</b> — он сам появится вверху в разделе «Новые ноутбуки».
+      </div>
     </section>
 
     <section class="panel">
-      <h2>Журнал</h2>
-      <ul class="log" id="log"></ul>
+      <details class="log-box">
+        <summary>Журнал</summary>
+        <ul class="log" id="log"></ul>
+      </details>
     </section>
   </main>
 
@@ -141,14 +75,15 @@
   <!-- ===================== НАСТРОЙКИ ===================== -->
   <main id="tab-settings" class="tabpage" hidden>
     <section class="panel">
-      <h2>Поиск</h2>
-      <label>Поисковая система по умолчанию: <select id="setEngine"></select></label>
-      <p class="muted">Яндекс открывается с семейным фильтром, Google — с безопасным поиском.</p>
+      <h2>🌐 Сайты и поиск</h2>
+      <div class="row"><span>Поисковая система по умолчанию:</span><select id="setEngine"></select></div>
+      <p class="muted small">Яндекс открывается с семейным фильтром, Google — с безопасным поиском.</p>
+      <div class="row"><span>Текст заставки «Внимание»:</span><input type="text" id="setLockText" maxlength="200" style="flex:1"><button class="btn small" id="btnSaveLockText">Сохранить</button></div>
     </section>
 
     <section class="panel">
-      <h2>Программы для кнопки «Закрыть программу»</h2>
-      <p class="muted">Имя процесса можно посмотреть в Диспетчере задач Windows → «Подробности» (например, chrome.exe).</p>
+      <h2>✖️ Программы для кнопки «Закрыть программу»</h2>
+      <p class="muted small">Имя процесса можно посмотреть в Диспетчере задач Windows → «Подробности» (например, chrome.exe).</p>
       <div id="appsEditor"></div>
       <div class="row">
         <button class="btn" id="btnAddApp">+ Добавить программу</button>
@@ -157,8 +92,10 @@
       </div>
     </section>
 
-    <div id="settingsExtra"></div>
+    <div id="settingsExtra" class="settings-grid"></div>
   </main>
+
+  <div class="toasts" id="toasts"></div>
 
   <script src="/ui/static/app.js"></script>
   <script src="/ui/static/projects.js"></script>
