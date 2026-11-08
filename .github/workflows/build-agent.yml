@@ -1,0 +1,49 @@
+# Сборка agent.exe для Windows и прогон тестов.
+# Запускается при каждой отправке кода на GitHub, а также вручную
+# (вкладка Actions → «Сборка и тесты» → Run workflow).
+# Готовый agent.exe: открыть запуск → внизу раздел Artifacts → agent-windows.
+
+name: Сборка и тесты
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  tests-mac:
+    name: Тесты (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-teacher.txt -r requirements-dev.txt
+      - run: python -m pytest -v
+
+  build-windows:
+    name: Тесты и сборка agent.exe (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt pyinstaller==6.15.0
+      - name: Тесты (включая DPAPI, Known Folders, mutex, автозапуск)
+        run: python -m pytest -v
+      - name: Сборка agent.exe
+        run: >
+          pyinstaller --onefile --noconsole --clean --name agent
+          --paths . --collect-submodules zeroconf
+          agent/run_agent.py
+      - name: Проверка, что exe собрался
+        shell: pwsh
+        run: |
+          $f = Get-Item dist/agent.exe
+          "Размер agent.exe: {0:N1} МБ" -f ($f.Length / 1MB)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-windows
+          path: dist/agent.exe
+          retention-days: 30

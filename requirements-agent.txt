@@ -1,0 +1,3 @@
+# Агент (Windows). Сборка: см. .github/workflows/build-agent.yml
+aiohttp==3.12.15
+zeroconf==0.147.2
