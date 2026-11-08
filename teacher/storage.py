@@ -39,6 +39,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "max_file_mb": 500,
     # Куда складывать проекты на Mac ("" — ~/Documents/Компьютерный класс)
     "projects_root": "",
+    # Сортировка: текущая группа (id или None — искать во всех) и порог похожести имён
+    "active_group": None,
+    "name_threshold": 85,
 }
 
 

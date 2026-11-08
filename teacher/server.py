@@ -43,6 +43,7 @@ from shared.protocol import (
 from shared.search import SEARCH_ENGINES, to_url
 from teacher.db import DB
 from teacher.inbox import FileReceiver
+from teacher.sorter import Sorter
 from teacher.netutil import is_loopback, primary_ipv4
 from teacher.pairing import PairRequestManager
 from teacher.udp_discovery import start_responder
@@ -96,6 +97,7 @@ class TeacherServer:
         self.on_settings_changed: list = []
         self.db = DB(storage.data_dir / "teacher.sqlite3")
         self.files = FileReceiver(self)
+        self.sorter = Sorter(self)
         self.on_agent_connected.append(self._send_config)
         self.on_settings_changed.append(self._config_changed)
 
@@ -118,6 +120,7 @@ class TeacherServer:
             web.get("/ui/ws", self.handle_ui_ws),
         ])
         app.add_routes(self.files.routes())
+        app.add_routes(self.sorter.routes())
         app.router.add_static("/ui/static/", WEB_DIR)
         return app
 
@@ -383,7 +386,8 @@ class TeacherServer:
 
     def public_settings(self) -> dict[str, Any]:
         st = self.storage.settings()
-        return {k: st.get(k) for k in ("search_engine", "apps", "lesson_sets", "watch_folders", "max_file_mb")} | {
+        keys = ("search_engine", "apps", "lesson_sets", "watch_folders", "max_file_mb", "active_group", "name_threshold")
+        return {k: st.get(k) for k in keys} | {
             "search_engines": {k: v[0] for k, v in SEARCH_ENGINES.items()},
             "projects_root": str(self.projects_root()),
         }
@@ -447,6 +451,19 @@ class TeacherServer:
             if not isinstance(mb, int) or not 1 <= mb <= 4096:
                 raise ValueError("Лимит размера: от 1 до 4096 МБ")
             out["max_file_mb"] = mb
+        if "active_group" in body:
+            g = body["active_group"]
+            if g in (None, "", 0):
+                out["active_group"] = None
+            elif not self.db.one("SELECT 1 FROM groups WHERE id=?", (int(g),)):
+                raise ValueError("Группа не найдена")
+            else:
+                out["active_group"] = int(g)
+        if "name_threshold" in body:
+            t = body["name_threshold"]
+            if not isinstance(t, int) or not 60 <= t <= 100:
+                raise ValueError("Порог похожести имён: от 60 до 100")
+            out["name_threshold"] = t
         if "projects_root" in body:
             root = str(body["projects_root"]).strip()
             if root and not Path(root).expanduser().is_absolute():
