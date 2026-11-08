@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 
 from rapidfuzz import fuzz
 
@@ -58,6 +59,8 @@ def translit(text: str) -> str:
 
 def normalize(text: str) -> str:
     """«Маша_Иванова-2 (final).SB3» → «маша иванова финал …» без цифр и знаков."""
+    # NFC: в именах файлов macOS «ё»/«й» хранятся как буква + отдельный значок
+    text = unicodedata.normalize("NFC", text)
     t = translit(text.lower().replace("ё", "е"))
     t = t.replace("ё", "е")
     t = re.sub(r"[^а-яa-z]+", " ", t)  # всё, кроме букв (цифры, знаки, _) → пробел
@@ -123,3 +126,49 @@ def suggest_alias(filename: str, student_name: str) -> str:
         return ""
     name = _soft(tokens(student_name)[0]) if tokens(student_name) else ""
     return max(words, key=lambda w: (fuzz.ratio(_soft(w), name), len(w)))
+
+
+# ================= Номер группы в названиях =================
+# Группы называются «М6-1(2)», «М6-3», «7-1» и т.п.; дети пишут «Ваня6-1(2) проект».
+
+_CODE_RE = re.compile(r"(?<!\d)(?<!\d[-–—_.])(\d{1,2})\s*[-–—_]\s*(\d{1,2})(?:\s*\(\s*(\d{1,2})\s*\))?(?!\d)")
+
+
+def group_code(text: str) -> tuple[str, str, str] | None:
+    """Код группы из текста: «Ваня6-1(2) проект» → ("6", "1", "2"); «М6-3» → ("6", "3", "")."""
+    m = _CODE_RE.search(text or "")
+    if not m:
+        return None
+    return m.group(1), m.group(2), m.group(3) or ""
+
+
+def looks_like_group_folder(name: str) -> bool:
+    """Папка-группа: «М6-1(2)», «M7-1», «6-4», «Группа 6-1»."""
+    return bool(re.fullmatch(r"[^\d]{0,12}\s*\d{1,2}\s*[-–—_]\s*\d{1,2}(\s*\(\s*\d{1,2}\s*\))?\s*", name or ""))
+
+
+# Слова, которые не являются именами (в названиях работ)
+_NOT_NAMES = {
+    "проект", "проектик", "проекта", "project", "untitled", "без", "названия", "новый", "новая", "new", "копия", "copy",
+    "tinkercad", "тинкер", "scratch", "скретч", "kodu", "codu", "игра", "game", "урок", "lesson", "test", "тест",
+    "презентация", "файл", "file", "document", "документ", "my", "мой", "моя", "guest", "by", "version", "final",
+    "домашка", "дз", "работа", "screen", "video", "видео", "image", "img", "photo", "фото",
+}
+
+
+def name_from_filename(filename: str) -> str | None:
+    """
+    Имя ребёнка из названия его работы: «Ваня6-1(2) проект.pptx» → «Ваня»,
+    «КИРИЛЛ ПРОЕКТИК.sb3» → «Кирилл», «Masha_robot» → «Маша». None — имени не видно.
+    """
+    filename = unicodedata.normalize("NFC", filename)
+    stem = filename.rsplit(".", 1)[0] if "." in filename.strip(".") else filename
+    word = re.split(r"[^A-Za-zА-Яа-яЁё]+", stem.strip())
+    word = next((w for w in word if w), "")
+    if not 2 <= len(word) <= 20:
+        return None
+    if word.lower() in _NOT_NAMES:
+        return None
+    if re.fullmatch(r"[A-Za-z]+", word):
+        word = translit(word)
+    return word[:1].upper() + word[1:].lower()

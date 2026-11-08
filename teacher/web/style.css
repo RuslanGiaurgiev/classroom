@@ -88,7 +88,21 @@ label.check input { width: 22px; height: 22px; accent-color: var(--teal); }
 .hello { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
 .hello h1 { font-size: 34px; text-transform: uppercase; }
 .hello .group-pick { display: flex; align-items: center; gap: 10px; background: var(--soft); border-radius: 999px; padding: 6px 8px 6px 18px; }
-.hello .group-pick select { border-radius: 999px; padding: 8px 14px; border-color: var(--teal); }
+.hello .group-pick { border: 0; cursor: pointer; font: inherit; color: var(--ink); }
+.hello .group-pick b { background: #fff; border: 3px solid var(--teal); border-radius: 999px; padding: 7px 14px; font-family: var(--font-head); font-size: 14px; }
+.pick-arrow { color: var(--teal-dark); font-weight: 900; padding-right: 8px; }
+.toggle-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.toggle { border: 0; cursor: pointer; border-radius: 16px; padding: 14px 10px; background: #fff; outline: 3px solid var(--line); outline-offset: -3px;
+  box-shadow: 0 4px 0 var(--line); font-family: var(--font-head); font-size: 15px; display: grid; gap: 4px; }
+.toggle small { font-family: var(--font-body); color: var(--muted); font-size: 12px; }
+.toggle.on { background: var(--teal); color: #fff; outline-color: var(--teal); box-shadow: 0 4px 0 var(--teal-dark); }
+.toggle.on small { color: #fff; }
+.import-group { border-radius: 18px; background: var(--soft); padding: 12px 14px; display: grid; gap: 8px; }
+.import-group.off { opacity: .45; }
+.import-group .gname { font-family: var(--font-head); width: 160px; }
+.kid { display: inline-flex; align-items: center; gap: 4px; background: #fff; border-radius: 999px; padding: 3px 4px 3px 12px; margin: 3px 4px 0 0; font-weight: 800; }
+.kid.exists { opacity: .55; }
+.kid button { border: 0; background: var(--soft); border-radius: 50%; width: 22px; height: 22px; cursor: pointer; color: var(--red); font-weight: 900; }
 .online-big { font-family: var(--font-head); font-size: 15px; color: var(--forest); }
 
 /* ---------- Класс: карточки действий ---------- */

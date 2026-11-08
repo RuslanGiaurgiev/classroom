@@ -45,6 +45,7 @@ from shared.search import SEARCH_ENGINES, to_url
 from teacher.db import DB
 from teacher.endlesson import EndLesson
 from teacher.updates import UpdateManager
+from teacher.importer import Importer
 from teacher.inbox import FileReceiver
 from teacher.materials import MaterialsManager
 from teacher.sorter import Sorter
@@ -107,6 +108,7 @@ class TeacherServer:
         self.db = DB(storage.data_dir / "teacher.sqlite3")
         self.files = FileReceiver(self)
         self.sorter = Sorter(self)
+        self.importer = Importer(self)
         self.end_lesson = EndLesson(self)
         self.updates = UpdateManager(self)
         self.materials = MaterialsManager(self)
@@ -136,6 +138,7 @@ class TeacherServer:
         ])
         app.add_routes(self.files.routes())
         app.add_routes(self.sorter.routes())
+        app.add_routes(self.importer.routes())
         app.add_routes(self.disk.routes())
         app.add_routes(self.end_lesson.routes())
         app.add_routes(self.updates.routes())
@@ -451,7 +454,7 @@ class TeacherServer:
 
     def public_settings(self) -> dict[str, Any]:
         st = self.storage.settings()
-        keys = ("search_engine", "apps", "lesson_sets", "watch_folders", "max_file_mb", "active_group",
+        keys = ("search_engine", "apps", "lesson_sets", "watch_folders", "max_file_mb", "active_groups",
                 "name_threshold", "disk_root", "disk_client_id", "ignore_patterns", "materials_dest", "lock_text")
         return {k: st.get(k) for k in keys} | {
             "search_engines": {k: v[0] for k, v in SEARCH_ENGINES.items()},
@@ -550,14 +553,18 @@ class TeacherServer:
             if not isinstance(mb, int) or not 1 <= mb <= 4096:
                 raise ValueError("Лимит размера: от 1 до 4096 МБ")
             out["max_file_mb"] = mb
-        if "active_group" in body:
+        if "active_group" in body:   # старый формат (одна группа)
             g = body["active_group"]
-            if g in (None, "", 0):
-                out["active_group"] = None
-            elif not self.db.one("SELECT 1 FROM groups WHERE id=?", (int(g),)):
-                raise ValueError("Группа не найдена")
-            else:
-                out["active_group"] = int(g)
+            body = {**body, "active_groups": [] if g in (None, "", 0) else [g]}
+        if "active_groups" in body:
+            ids = []
+            for g in body["active_groups"] or []:
+                if not self.db.one("SELECT 1 FROM groups WHERE id=?", (int(g),)):
+                    raise ValueError("Группа не найдена")
+                if int(g) not in ids:
+                    ids.append(int(g))
+            out["active_groups"] = ids
+            out["active_group"] = None
         if "name_threshold" in body:
             t = body["name_threshold"]
             if not isinstance(t, int) or not 60 <= t <= 100:

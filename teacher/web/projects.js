@@ -7,7 +7,9 @@
   const fail = (t) => App.toast(t, "error");
   const COLORS = ["var(--teal)", "var(--orange)", "var(--purple)", "var(--blue)", "var(--red)", "var(--mint)"];
 
-  let proj = { groups: [], unsorted: [], recent: [], active_group: null, root: "" };
+  let proj = { groups: [], unsorted: [], recent: [], active_groups: [], root: "" };
+  const activeIds = () => proj.active_groups || [];
+  const activeGroups = () => proj.groups.filter((g) => activeIds().includes(g.id));
   let disk = { counts: {}, state: "", has_token: false };
   // Что открыто справа: {mode: "group"|"student"|"unsorted"|"recent", groupId, studentId}
   let view = { mode: "group", groupId: null, studentId: null };
@@ -33,32 +35,98 @@
         [proj, disk] = await Promise.all([api("GET", "/ui/api/projects"), api("GET", "/ui/api/disk")]);
         App.proj = proj;
         App.disk = disk;
-        if (view.groupId == null || !proj.groups.some((g) => g.id === view.groupId)) view.groupId = proj.active_group || (proj.groups[0] || {}).id || null;
+        if (view.groupId == null || !proj.groups.some((g) => g.id === view.groupId)) view.groupId = activeIds()[0] || (proj.groups[0] || {}).id || null;
         render();
-        renderGroupSelect();
+        renderGroupPick();
         if (App.onProjects) App.onProjects();
       } catch (e) { console.error(e); }
     }, 200);
   }
   App.reloadProjects = reload;
 
-  // ---------- «Сейчас занимается» на экране «Класс» ----------
-  function renderGroupSelect() {
-    const sel = $("groupSelect");
-    sel.innerHTML = "";
-    sel.append(el("option", { value: "" }, proj.groups.length ? "— выберите группу —" : "сначала создайте группу в «Работах»"));
-    for (const g of proj.groups) sel.append(el("option", { value: g.id }, `${g.name} (${g.students.length})`));
-    sel.value = proj.active_group || "";
+  // ---------- «Сейчас занимаются» на экране «Класс» (можно несколько групп) ----------
+  function renderGroupPick() {
+    const names = activeGroups().map((g) => g.name);
+    $("groupPickText").textContent = !proj.groups.length ? "сначала добавьте группы" : names.length ? names.join(", ") : "выберите группы";
   }
-  async function setActiveGroup(id) {
+  async function setActiveGroups(ids, quiet = false) {
     try {
-      await api("PUT", "/ui/api/settings", { active_group: id ? Number(id) : null });
-      const g = proj.groups.find((x) => x.id === Number(id));
-      ok(g ? `Сейчас занимается «${g.name}» — работы будут раскладываться по её ученикам` : "Группа не выбрана");
+      await api("PUT", "/ui/api/settings", { active_groups: ids });
+      const names = proj.groups.filter((g) => ids.includes(g.id)).map((g) => g.name);
+      if (!quiet) ok(names.length ? `Сейчас занимаются: ${names.join(", ")} — работы раскладываются по их ученикам` : "Группы урока не выбраны");
     } catch (e) { fail(e.message); }
     reload();
   }
-  $("groupSelect").onchange = (e) => setActiveGroup(e.target.value);
+  async function groupPickDialog() {
+    if (!proj.groups.length) { App.showTab("projects"); importDialog(); return; }
+    const chosen = new Set(activeIds());
+    const grid = el("div", { className: "toggle-grid" });
+    for (const g of proj.groups) {
+      const t = el("button", { className: "toggle" + (chosen.has(g.id) ? " on" : "") }, g.name, el("small", {}, `${g.students.length} уч.`));
+      t.onclick = () => { chosen.has(g.id) ? chosen.delete(g.id) : chosen.add(g.id); t.classList.toggle("on"); };
+      grid.append(t);
+    }
+    const v = await App.dialog({
+      title: "Кто сейчас на уроке?", wide: true,
+      body: [el("p", { className: "muted small" }, "Отметьте одну или несколько групп (например, 6-1 и 6-1(2), если они занимаются вместе). Работы будут раскладываться по их ученикам."), grid],
+      buttons: [{ text: "Снять все", value: "none" }, { text: "Отмена", value: null }, { text: "Готово", kind: "primary", value: "ok" }],
+    });
+    if (v === "ok") setActiveGroups([...chosen]);
+    if (v === "none") setActiveGroups([]);
+  }
+  $("groupPick").onclick = groupPickDialog;
+
+  // ---------- Импорт групп и учеников из папки ----------
+  async function importDialog() {
+    let r;
+    try {
+      App.toast("Выберите папку, где лежат работы по группам (например, «Проекты Детей» или папка Яндекс Диска)");
+      r = await api("POST", "/ui/api/import/pick", {});
+    } catch (e) { fail(e.message); return; }
+    if (!r.path) return;
+    if (!r.groups.length) {
+      App.dialog({ title: "Группы не найдены", body: [el("p", {}, "В выбранной папке нет папок с номерами групп (например, «М6-1(2)» или «6-3»)."),
+        el("p", { className: "muted small" }, "Выберите папку, внутри которой лежат папки групп.")], buttons: [{ text: "Понятно", kind: "primary", value: null }] });
+      return;
+    }
+    const groups = r.groups.map((g) => ({ ...g, on: true, students: g.students.map((s) => ({ ...s })) }));
+    const list = el("div", { style: "display:grid;gap:10px" });
+    const draw = () => {
+      list.innerHTML = "";
+      for (const g of groups) {
+        const on = el("input", { type: "checkbox", checked: g.on });
+        on.onchange = () => { g.on = on.checked; draw(); };
+        const gname = el("input", { type: "text", value: g.name, className: "gname" });
+        gname.oninput = () => (g.name = gname.value);
+        const kids = el("div", {});
+        g.students.forEach((s, i) => {
+          const rm = el("button", { textContent: "✕", title: "Убрать" });
+          rm.onclick = () => { g.students.splice(i, 1); draw(); };
+          kids.append(el("span", { className: "kid" + (s.exists ? " exists" : ""), title: s.exists ? "уже есть" : `найдено в ${s.files} файл.` }, s.name, rm));
+        });
+        const add = el("input", { type: "text", placeholder: "+ имя и Enter", style: "width:140px;padding:5px 10px" });
+        add.onkeydown = (e) => { if (e.key === "Enter" && add.value.trim()) { g.students.push({ name: add.value.trim(), files: 0 }); draw(); } };
+        kids.append(add);
+        list.append(el("div", { className: "import-group" + (g.on ? "" : " off") },
+          el("label", { className: "check" }, on, gname, el("span", { className: "muted small" }, g.exists ? "группа уже есть — добавятся только новые дети" : "новая группа")),
+          kids));
+      }
+    };
+    draw();
+    const v = await App.dialog({
+      title: "Импорт групп", wide: true,
+      body: [el("p", { className: "muted small" }, `Папка: ${r.path}. Проверьте, что всё верно: уберите лишнее (✕), допишите недостающих детей, снимите галочку с ненужных групп.`), list],
+      buttons: [{ text: "Отмена", value: null }, { text: "Создать", kind: "primary", value: "ok" }],
+    });
+    if (v !== "ok") return;
+    try {
+      const res = await api("POST", "/ui/api/import/apply", { groups: groups.filter((g) => g.on).map((g) => ({ name: g.name, students: g.students })) });
+      ok(`Создано групп: ${res.groups}, добавлено детей: ${res.students}`);
+      if (res.errors.length) fail(res.errors.join("; "));
+    } catch (e) { fail(e.message); }
+    reload();
+  }
+  App.importGroups = importDialog;
 
   // ---------- Действия с работами ----------
   const reveal = (id) => api("POST", `/ui/api/files/${id}/reveal`).catch((e) => fail(e.message));
@@ -132,14 +200,16 @@
     const side = el("aside", { className: "side-list" }, el("div", { className: "eyebrow" }, "Группы"));
     for (const g of proj.groups) {
       const active = (view.mode === "group" || view.mode === "student") && view.groupId === g.id;
-      const b = el("button", { className: "side-item" + (active ? " active" : "") + (g.id === proj.active_group ? " now" : "") },
+      const b = el("button", { className: "side-item" + (active ? " active" : "") + (activeIds().includes(g.id) ? " now" : "") },
         el("b", {}, g.name), el("span", { className: "cnt" }, String(g.students.length)));
       b.onclick = () => { view = { mode: "group", groupId: g.id, studentId: null }; render(); };
       side.append(b);
     }
     const add = el("button", { className: "btn ghost", textContent: "+ Новая группа" });
     add.onclick = newGroup;
-    side.append(add, el("div", { className: "eyebrow", style: "margin-top:10px" }, "Ещё"));
+    const imp = el("button", { className: "btn orange", textContent: "⬇ Импорт из папки", title: "Создать группы и детей по папке с работами" });
+    imp.onclick = importDialog;
+    side.append(add, imp, el("div", { className: "eyebrow", style: "margin-top:10px" }, "Ещё"));
     for (const [mode, ic, title, cnt] of [["unsorted", "📥", "Неразобранное", proj.unsorted.length], ["recent", "🕘", "Последние", null]]) {
       const b = el("button", { className: "side-item" + (view.mode === mode ? " active" : "") }, el("span", {}, ic), el("b", {}, title),
         cnt != null ? el("span", { className: "cnt" }, String(cnt)) : null);
@@ -170,20 +240,23 @@
   }
 
   function renderNoGroups() {
-    const add = el("button", { className: "btn big", textContent: "+ Создать первую группу" });
+    const imp = el("button", { className: "btn orange big", textContent: "⬇ Импорт из папки с работами" });
+    imp.onclick = importDialog;
+    const add = el("button", { className: "btn ghost big", textContent: "+ Создать вручную" });
     add.onclick = newGroup;
     return el("section", { className: "box empty" }, el("div", { className: "big" }, "👩‍🎓"),
-      el("h2", {}, "Добавьте группу и учеников"),
-      el("p", { className: "muted" }, "Тогда работы детей будут сами раскладываться по папкам: Группа → Ученик → Дата.", el("br"),
-        "Работа попадёт к ученику, если в названии файла есть его имя: «Маша_кот.sb3», «masha robot»."), add);
+      el("h2", {}, "Добавьте группы и учеников"),
+      el("p", { className: "muted" }, "Быстрее всего — импорт: выберите папку, где работы лежат по группам (например, «Проекты Детей» с папками М6-1(2), М6-3…).", el("br"),
+        "Приложение само найдёт группы и имена детей в названиях файлов, а вы проверите список."),
+      el("div", { className: "row", style: "justify-content:center" }, imp, add));
   }
 
   function renderGroup(g) {
     const box = el("section", { className: "box" });
-    const isNow = g.id === proj.active_group;
-    const now = el("button", { className: "btn " + (isNow ? "quiet" : "orange") + " small", textContent: isNow ? "✓ Занимается сейчас" : "Сейчас занимается эта группа" });
-    now.disabled = isNow;
-    now.onclick = () => setActiveGroup(g.id);
+    const isNow = activeIds().includes(g.id);
+    const now = el("button", { className: "btn " + (isNow ? "" : "orange") + " small", textContent: isNow ? "✓ На уроке сейчас" : "Отметить: на уроке сейчас",
+      title: isNow ? "Нажмите, чтобы снять отметку" : "Можно отметить несколько групп" });
+    now.onclick = () => setActiveGroups(isNow ? activeIds().filter((x) => x !== g.id) : [...activeIds(), g.id]);
     const ren = el("button", { className: "btn ghost small", textContent: "Переименовать" });
     ren.onclick = async () => {
       const name = await App.prompt("Новое название группы", g.name);
@@ -296,18 +369,22 @@
       box.append(el("div", { className: "empty" }, el("div", { className: "big" }, "👍"), el("p", {}, "Всё разобрано!")));
       return box;
     }
-    const active = proj.groups.find((g) => g.id === proj.active_group);
+    const active = activeGroups();
     const sameName = {};
     for (const f of proj.unsorted) sameName[f.name] = (sameName[f.name] || 0) + 1;
     const wrap = el("div", { style: "display:grid;gap:16px" });
     for (const f of proj.unsorted) {
       const chips = el("div", { className: "assign" });
-      const students = active ? active.students : [];
-      for (const s of students) {
-        const b = el("button", { className: "btn small", textContent: s.name });
-        b.onclick = () => assign(f, s.id);
-        chips.append(b);
+      const manyGroups = active.length > 1;
+      for (const g of active) {
+        if (manyGroups) chips.append(el("span", { className: "pill", style: "align-self:center" }, g.name));
+        for (const s of g.students) {
+          const b = el("button", { className: "btn small", textContent: s.name, title: g.name });
+          b.onclick = () => assign(f, s.id);
+          chips.append(b);
+        }
       }
+      const students = active.flatMap((g) => g.students);
       const other = el("button", { className: "btn ghost small", textContent: students.length ? "Другой ученик…" : "Выбрать ученика…" });
       other.onclick = async () => { const sid = await pickStudent(`Чья работа «${f.name}»?`); if (sid) assign(f, sid); };
       chips.append(other);
@@ -338,7 +415,7 @@
         el("div", { className: "head" }, el("span", { className: "file-ico" }, icon(f.name)),
           el("div", { className: "file-info" }, el("b", {}, f.name), el("span", { className: "muted small" }, `ноутбук ${f.laptop} · ${fmtTime(f.received_at)} · ${fmtSize(f.size)}`)),
           show, ign, del),
-        el("div", { className: "muted small" }, active ? `Чья это работа? Группа «${active.name}»:` : "Чья это работа? (Выберите «Сейчас занимается» на экране «Класс» — здесь появятся кнопки с именами.)"),
+        el("div", { className: "muted small" }, active.length ? `Чья это работа? (${active.map((g) => g.name).join(", ")})` : "Чья это работа? (Отметьте на экране «Класс», какие группы сейчас на уроке, — здесь появятся кнопки с именами.)"),
         chips));
     }
     box.append(wrap);

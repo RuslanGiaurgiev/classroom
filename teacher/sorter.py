@@ -27,7 +27,7 @@ from aiohttp import web
 
 from shared.ignore import BUILTIN_PATTERNS, clean_patterns, ignored_by_patterns
 from teacher.inbox import safe_name, unique_path
-from teacher.names import DEFAULT_THRESHOLD, match_students, suggest_alias
+from teacher.names import DEFAULT_THRESHOLD, group_code, match_students, suggest_alias
 
 if TYPE_CHECKING:
     from teacher.server import TeacherServer
@@ -84,9 +84,32 @@ class Sorter:
 
     # ================= Сортировка =================
 
-    def candidates(self) -> list[dict]:
-        active = self.server.storage.settings().get("active_group")
-        return self.db.students(int(active) if active else None)
+    def active_groups(self) -> list[int]:
+        """Группы, которые сейчас занимаются (их может быть несколько — например, 6-1 и 6-1(2))."""
+        st = self.server.storage.settings()
+        ids = st.get("active_groups")
+        if ids is None and st.get("active_group"):      # настройка старой версии
+            ids = [st["active_group"]]
+        return [int(i) for i in ids or []]
+
+    def candidates(self, *texts: str) -> list[dict]:
+        """
+        Среди кого искать ученика:
+          1) если в названии файла (или пути) есть номер группы («Ваня6-1(2) проект») и такая
+             группа существует — только в ней (так различаются Вани из 6-1 и 6-1(2));
+          2) иначе — среди групп, которые сейчас занимаются;
+          3) если ни одна не выбрана — среди всех.
+        """
+        for t in texts:
+            code = group_code(t or "")
+            if code:
+                same = [g["id"] for g in self.db.q("SELECT id, name FROM groups") if group_code(g["name"]) == code]
+                if same:
+                    return [s for s in self.db.students() if s["group_id"] in same]
+        active = self.active_groups()
+        if active:
+            return [s for s in self.db.students() if s["group_id"] in active]
+        return self.db.students()
 
     def project_dir(self, student: dict, lesson_date: str) -> Path:
         return self.server.projects_root() / "Проекты" / student["group_name"] / student["name"] / lesson_date
@@ -96,7 +119,7 @@ class Sorter:
         if f is None or f["status"] != "new":
             return
         threshold = int(self.server.storage.settings().get("name_threshold", DEFAULT_THRESHOLD))
-        found = match_students(f["name"], self.candidates(), threshold)
+        found = match_students(f["name"], self.candidates(f["name"], f["rel_path"]), threshold)
         src = Path(f["inbox_path"])
         if len(found) == 1:
             student = self.db.student(found[0]["id"])
@@ -172,7 +195,8 @@ class Sorter:
         st = self.server.storage.settings()
         return web.json_response({
             "groups": self.db.groups(date.today().isoformat()),
-            "active_group": st.get("active_group"),
+            "active_group": (self.active_groups() or [None])[0],
+            "active_groups": self.active_groups(),
             "unsorted": unsorted,
             "recent": files("1=1", 100),
             "root": str(self.server.projects_root()),
@@ -205,8 +229,8 @@ class Sorter:
         self.db.q("UPDATE received SET student_id=NULL WHERE student_id IN (SELECT id FROM students WHERE group_id=?)", (gid,))
         self.db.q("DELETE FROM students WHERE group_id=?", (gid,))
         self.db.q("DELETE FROM groups WHERE id=?", (gid,))
-        if str(self.server.storage.settings().get("active_group")) == str(gid):
-            self.server.storage.update_settings(active_group=None)
+        if gid in self.active_groups():
+            self.server.storage.update_settings(active_groups=[g for g in self.active_groups() if g != gid], active_group=None)
         await self.server.broadcast_event({"kind": "projects_changed"})
         return web.json_response({"ok": True})
 

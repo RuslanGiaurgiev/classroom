@@ -40,7 +40,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # Куда складывать проекты на Mac ("" — ~/Documents/Компьютерный класс)
     "projects_root": "",
     # Сортировка: текущая группа (id или None — искать во всех) и порог похожести имён
-    "active_group": None,
+    "active_group": None,      # старый формат, заменён на active_groups
+    "active_groups": None,     # id групп, которые сейчас занимаются (может быть несколько)
     "name_threshold": 85,
     # Яндекс Диск: корневая папка школы и ClientID приложения (токен — в Связке ключей)
     "disk_root": "Компьютерный класс",
