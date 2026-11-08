@@ -18,7 +18,20 @@ IGNORE_PATTERNS = [
     "*.part", "*.partial", "*.download", "*.opdownload",
     "*.tmp", "~$*",   # временные файлы Office и программ
     "desktop.ini", "thumbs.db", ".ds_store",
+    # Рабочие файлы программ (журналы, блокировки, базы) — это не проекты учеников
+    "*.log", "*.dpapi", "*.lock", "*.lck", "*-journal", "*.wal", "*.shm", "*.ldb", "*.etl",
+    "*.pid", "*.dmp",
 ]
+
+# Служебные папки программ: всё внутри них не отправляем
+IGNORE_DIRS = {
+    "logs", "log", "cache", "caches", "temp", "tmp", "crashpad", "crash reports", "gpucache",
+    "code cache", "node_modules", "__pycache__", ".git",
+}
+
+NOISY_VERSIONS = 3          # столько версий одного файла за NOISY_WINDOW секунд → файл «шумный»
+NOISY_WINDOW = 600.0
+NOISY_STABLE_SECONDS = 120  # «шумный» файл отправляем, только когда он не меняется 2 минуты
 
 STABLE_SECONDS = 3.0      # размер не меняется столько секунд → файл готов
 HASH_CHUNK = 1024 * 1024
@@ -33,6 +46,8 @@ def should_ignore(rel_path: Path, size: int, max_bytes: int, is_hidden: Callable
     """Причина игнорирования или None, если файл надо отправить."""
     if is_ignored_name(rel_path.name):
         return "временный/служебный файл"
+    if any(part.lower() in IGNORE_DIRS for part in rel_path.parts[:-1]):
+        return "служебная папка программы"
     if any(part.startswith(".") for part in rel_path.parts):
         return "скрытый файл"
     if is_hidden(full_path):
@@ -104,10 +119,11 @@ class ReadinessTracker:
     def forget(self, path: Path) -> None:
         self._obs.pop(path, None)
 
-    def is_ready(self, path: Path) -> bool:
+    def is_ready(self, path: Path, stable_seconds: float | None = None) -> bool:
         o = self._obs.get(path)
         if o is None:
             return False
-        if self.clock() - o.stable_since < self.stable_seconds:
+        need = self.stable_seconds if stable_seconds is None else stable_seconds
+        if self.clock() - o.stable_since < need:
             return False
         return self.can_open(path)

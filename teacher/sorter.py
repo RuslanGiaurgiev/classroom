@@ -72,6 +72,8 @@ class Sorter:
             web.delete("/ui/api/students/{id}", self.handle_student_delete),
             web.post("/ui/api/files/{id}/assign", self.handle_assign),
             web.post("/ui/api/files/{id}/reveal", self.handle_reveal),
+            web.post("/ui/api/files/{id}/delete", self.handle_delete),
+            web.post("/ui/api/files/delete-unsorted-by-name", self.handle_delete_by_name),
             web.post("/ui/api/open-folder", self.handle_open_folder),
         ]
 
@@ -282,6 +284,43 @@ class Sorter:
         except (ValueError, TypeError) as e:
             return web.json_response({"error": str(e)}, status=400)
         return web.json_response(r)
+
+    def trash_dir(self) -> Path:
+        """Корзина Mac (для тестов можно подменить)."""
+        return Path.home() / ".Trash"
+
+    def delete_file(self, file_id: int) -> bool:
+        """
+        Убрать ненужный файл (мусор) в Корзину Mac. Запись остаётся со статусом deleted:
+        учитель файл получил, поэтому «Конец урока» уберёт его и с ноутбука,
+        а агент не будет присылать его снова.
+        """
+        f = self.db.one("SELECT * FROM received WHERE id=?", (file_id,))
+        if f is None:
+            return False
+        trash = self.trash_dir()
+        trash.mkdir(parents=True, exist_ok=True)
+        for p in {f["project_path"], f["inbox_path"]}:
+            if p and Path(p).exists():
+                dest = unique_path(trash / Path(p).name)
+                shutil.move(p, dest)
+                self._remove_empty_dirs(Path(p).parent)
+        self.db.q("UPDATE received SET status='deleted', project_path=NULL WHERE id=?", (file_id,))
+        self.db.q("DELETE FROM disk_queue WHERE received_id=? AND status!='done'", (file_id,))
+        return True
+
+    async def handle_delete(self, request: web.Request) -> web.Response:
+        ok = self.delete_file(int(request.match_info["id"]))
+        await self.server.broadcast_event({"kind": "projects_changed"})
+        return web.json_response({"ok": ok})
+
+    async def handle_delete_by_name(self, request: web.Request) -> web.Response:
+        name = str((await request.json()).get("name", ""))
+        rows = self.db.q("SELECT id FROM received WHERE status='unsorted' AND name=?", (name,))
+        for r in rows:
+            self.delete_file(r["id"])
+        await self.server.broadcast_event({"kind": "projects_changed"})
+        return web.json_response({"deleted": len(rows)})
 
     async def handle_reveal(self, request: web.Request) -> web.Response:
         """Показать файл в Finder."""

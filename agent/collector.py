@@ -24,7 +24,14 @@ from typing import TYPE_CHECKING
 
 import aiohttp
 
-from agent.files import ReadinessTracker, sha256_file, should_ignore
+from agent.files import (
+    NOISY_STABLE_SECONDS,
+    NOISY_VERSIONS,
+    NOISY_WINDOW,
+    ReadinessTracker,
+    sha256_file,
+    should_ignore,
+)
 from agent.ledger import FileRow, Ledger
 from agent.platform.base import Platform
 
@@ -83,6 +90,7 @@ class Collector:
         self._last_full_scan = 0.0
         self._last_pending_sent: int | None = None
         self._folders_cache: dict[str, Path] | None = None
+        self._noisy_logged: set[str] = set()
 
     # ================= Настройки =================
 
@@ -271,9 +279,17 @@ class Collector:
                 self.tracker.forget(path)
                 continue
             self.tracker.observe(path, st.st_size, st.st_mtime_ns)
-            if not self.tracker.is_ready(path):
-                continue
             key, rel = loc
+            # «Шумный» файл (меняется каждые несколько секунд — журнал программы и т.п.):
+            # отправляем, только когда он перестанет меняться на 2 минуты
+            need = None
+            if self.ledger.recent_versions(key, rel.as_posix(), NOISY_WINDOW) >= NOISY_VERSIONS:
+                need = max(NOISY_STABLE_SECONDS, self.tracker.stable_seconds)
+                if rel.as_posix() not in self._noisy_logged:
+                    self._noisy_logged.add(rel.as_posix())
+                    log.warning("Файл %s/%s постоянно меняется — отправлю, когда он успокоится", key, rel)
+            if not self.tracker.is_ready(path, need):
+                continue
             try:
                 sha = await asyncio.to_thread(sha256_file, path)
                 st2 = path.stat()
@@ -360,6 +376,11 @@ class Collector:
         if st is None:
             self.ledger.set_status(row.id, "gone", "файл удалён до отправки")
             log.warning("Файл %s/%s пропал до отправки", row.folder_key, row.rel_path)
+            return False
+        reason = should_ignore(Path(row.rel_path), st.st_size, self.max_bytes, self.platform.is_hidden, path)
+        if reason:
+            # Правила игнорирования могли измениться (новая версия агента) — не отправляем
+            self.ledger.set_status(row.id, "ignored", reason)
             return False
         if (st.st_size, st.st_mtime_ns) != (row.size, row.mtime_ns):
             # Файл изменили после того, как мы его нашли: эту версию не шлём, новую найдёт обход

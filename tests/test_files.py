@@ -341,3 +341,49 @@ async def test_end_lesson_offline_laptop(teacher, tmp_path):
     await wait_for(lambda: "4" not in teacher.agents)
     await teacher.end_lesson.run(["4"])
     assert teacher.end_lesson.progress["4"]["stage"] == "skip"
+
+
+# ---------- Случай с ноутбука 12: программа в «Загрузках» постоянно пишет свой журнал ----------
+
+@pytest.mark.parametrize("rel", ["data/logs/agent-errors.dpapi", "data/logs/x.txt", "app/Cache/a.bin",
+                                 "prog/app.log", "db.sqlite-journal"])
+def test_program_working_files_ignored(rel):
+    assert should_ignore(Path(rel), 100, 10**9, lambda p: False, Path(rel))
+
+
+async def test_noisy_file_does_not_flood(teacher, tmp_path, monkeypatch):
+    """Файл, который постоянно перезаписывается, не отправляется каждый раз заново."""
+    import agent.collector as col_mod
+    monkeypatch.setattr(col_mod, "NOISY_STABLE_SECONDS", 1.5)
+    platform, core = make_core(tmp_path, "12")
+    _, client, task = await start_agent(teacher, tmp_path, "12", core=core, platform=platform)
+    f = platform.known_folder("downloads") / "data" / "state.bin"
+    for i in range(12):                      # 12 перезаписей за ~4 секунды
+        write(f, f"version {i}".encode())
+        await asyncio.sleep(0.35)
+    await asyncio.sleep(2.5)                 # файл «успокоился» — уходит последняя версия
+    await wait_for(lambda: core.collector.ledger.pending_count() == 0, timeout=10)
+    rows = teacher.db.q("SELECT * FROM received")
+    assert len(rows) <= 5, f"слишком много версий: {len(rows)}"
+    last = max(rows, key=lambda r: r["received_at"])
+    assert Path(last["inbox_path"]).read_bytes() == b"version 11"   # последняя версия не потерялась
+    await stop_agent(client, task)
+
+
+async def test_delete_junk_from_unsorted(teacher, tmp_path):
+    from tests.test_integration import ui
+    from tests.test_names import receive
+    trash = tmp_path / "mac-trash"
+    teacher.sorter.trash_dir = lambda: trash
+    for i in range(3):
+        await receive(teacher, "12", "agent-errors.dpapi", f"junk{i}".encode())
+    keep = await receive(teacher, "12", "нужный.sb3", b"keep")
+    status, r = await ui(teacher, "POST", "/ui/api/files/delete-unsorted-by-name", json={"name": "agent-errors.dpapi"})
+    assert r["deleted"] == 3
+    _, proj = await ui(teacher, "GET", "/ui/api/projects")
+    assert [u["name"] for u in proj["unsorted"]] == ["нужный.sb3"]
+    assert len(list(trash.iterdir())) >= 3                    # ушло в Корзину, а не стёрто
+    assert not list((teacher.projects_root() / "Неразобранное").rglob("agent-errors*"))
+    assert Path(keep["project_path"]).exists()
+    # Учитель файлы получил — «Конец урока» сможет убрать их и с ноутбука
+    assert len(teacher.db.confirmed_shas("12")) == 4

@@ -107,6 +107,11 @@ class Ledger:
                 (folder_key, rel_path, size, mtime_ns, sha256, status, now, now, "дубликат" if dup else ""))
         return status
 
+    def recent_versions(self, folder_key: str, rel_path: str, seconds: float) -> int:
+        """Сколько версий этого файла нашли за последние seconds секунд (для «шумных» файлов)."""
+        return self._q("SELECT COUNT(*) FROM files WHERE folder_key=? AND rel_path=? AND first_seen>? AND status!='baseline'",
+                       (folder_key, rel_path, time.time() - seconds))[0][0]
+
     def set_status(self, row_id: int, status: str, note: str = "") -> None:
         self._q("UPDATE files SET status=?, note=?, updated=? WHERE id=?", (status, note, time.time(), row_id))
 

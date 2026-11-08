@@ -96,13 +96,27 @@
     if (!proj.unsorted.length) uns.append(el("p", { className: "muted" }, "Всё разобрано 👍"));
     else uns.append(el("p", { className: "muted small" },
       "Эти файлы не удалось отнести к ученику (имя не найдено или подходит нескольким). Нажмите на имя ученика."));
+    const sameName = {};
+    for (const f of proj.unsorted) sameName[f.name] = (sameName[f.name] || 0) + 1;
     for (const f of proj.unsorted) {
       const show = el("button", { className: "btn small", textContent: "Показать", title: "Показать в Finder" });
       show.onclick = () => reveal(f.id);
+      const del = el("button", { className: "btn small danger", textContent: "Удалить", title: "Это мусор — убрать в Корзину Mac" });
+      del.onclick = async () => {
+        if (sameName[f.name] > 1 && confirm(`Удалить ВСЕ файлы «${f.name}» из Неразобранного (${sameName[f.name]} шт.)?\nОни уйдут в Корзину Mac.`)) {
+          const r = await api("POST", "/ui/api/files/delete-unsorted-by-name", { name: f.name });
+          log(`Удалено в Корзину: ${r.deleted} × «${f.name}»`);
+        } else if (sameName[f.name] === 1 && confirm(`Удалить «${f.name}»? Файл уйдёт в Корзину Mac.`)) {
+          await api("POST", `/ui/api/files/${f.id}/delete`);
+          log(`«${f.name}» удалён в Корзину`);
+        } else return;
+        reload();
+      };
       uns.append(el("div", { className: "file-row" },
         el("div", { className: "file-info" }, el("b", {}, f.name),
-          el("div", { className: "muted small" }, `ноутбук ${f.laptop} · ${fmtTime(f.received_at)} · ${fmtSize(f.size)}`)),
-        studentPicker(f), show));
+          el("div", { className: "muted small" }, `ноутбук ${f.laptop} · ${fmtTime(f.received_at)} · ${fmtSize(f.size)}` +
+            (sameName[f.name] > 1 ? ` · таких файлов: ${sameName[f.name]}` : ""))),
+        studentPicker(f), show, del));
     }
     root.append(uns);
 

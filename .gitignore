@@ -7,3 +7,5 @@ build/
 dist/
 *.spec
 .DS_Store
+
+Снимок экрана*.png
