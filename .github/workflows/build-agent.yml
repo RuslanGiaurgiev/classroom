@@ -63,6 +63,11 @@ jobs:
           name: agent-windows
           path: dist/agent.exe
           retention-days: 30
+      - name: Есть ли ключ подписи
+        shell: bash
+        run: |
+          if [ -n "$SIGNING_KEY" ]; then echo "Ключ подписи найден"
+          else echo "::warning title=Ключ подписи не найден::Добавьте секрет AGENT_SIGNING_KEY в Settings → Secrets and variables → Actions → Secrets. Релиз для автообновления не будет опубликован."; fi
       # Подписанный релиз для автообновления ноутбуков.
       # Создаётся только из ветки main, только если задан секрет AGENT_SIGNING_KEY
       # и только если релиза с такой версией ещё нет (версия — в agent/__init__.py).
