@@ -65,7 +65,10 @@ jobs:
           retention-days: 30
       - name: Есть ли ключ подписи
         shell: bash
+        env:
+          KEY_IN_VARS: ${{ vars.AGENT_SIGNING_KEY != '' }}
         run: |
+          if [ "$KEY_IN_VARS" = "true" ]; then echo "::warning title=Ключ лежит в Variables::Ключ добавлен во вкладку Variables, а нужен во вкладке Secrets. Удалите его из Variables и добавьте в Secrets."; fi
           if [ -n "$SIGNING_KEY" ]; then echo "Ключ подписи найден"
           else echo "::warning title=Ключ подписи не найден::Добавьте секрет AGENT_SIGNING_KEY в Settings → Secrets and variables → Actions → Secrets. Релиз для автообновления не будет опубликован."; fi
       # Подписанный релиз для автообновления ноутбуков.
