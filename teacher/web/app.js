@@ -51,6 +51,12 @@ document.querySelectorAll(".tab").forEach((t) => {
   };
 });
 
+{ // Открыть вкладку из адреса (?tab=projects)
+  const t = new URLSearchParams(location.search).get("tab");
+  const btn = t && document.querySelector(`.tab[data-tab="${t}"]`);
+  if (btn) btn.click();
+}
+
 // ---------- Кому отправлять ----------
 function targets() {
   const mode = document.querySelector('input[name="target"]:checked').value;

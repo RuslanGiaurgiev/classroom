@@ -310,7 +310,7 @@ class YandexDisk:
         st = self.server.storage.settings()
         return web.json_response({
             "has_token": bool(self.tokens.get()),
-            "state": self.state,
+            "state": self.state if self.tokens.get() else "no_token",
             "last_error": self.last_error,
             "root": self.root(),
             "client_id": st.get("disk_client_id", ""),

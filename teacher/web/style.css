@@ -44,7 +44,7 @@ main { padding: 16px 20px; display: grid; gap: 16px; max-width: 1200px; margin: 
 .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
 .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
 .row:first-child { margin-top: 0; }
-textarea, input[type=text], select {
+textarea, input[type=text], input[type=number], input[type=password], select {
   font: inherit; color: var(--text); background: var(--bg);
   border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px;
 }
@@ -112,3 +112,23 @@ textarea { width: 100%; resize: vertical; }
 .card-actions { margin-top: 2px; }
 #appsEditor .row input { flex: 1; }
 .tabpage[hidden] { display: none; }
+/* --- Проекты, Диск, Конец урока (этапы 3–6) --- */
+.attention { border-color: #e0a800; }
+.file-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-top: 1px solid var(--border); flex-wrap: wrap; }
+.file-info { flex: 1; min-width: 180px; word-break: break-word; }
+.assign { display: flex; gap: 4px; flex-wrap: wrap; }
+.chip { border-radius: 14px; }
+.group { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; margin-top: 10px; background: var(--bg); }
+.group.active { border-color: var(--accent); }
+.group h3 { margin: 0; font-size: 15px; }
+.students { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.student { display: flex; align-items: center; gap: 4px; border: 1px solid var(--border); border-radius: 14px; padding: 2px 4px 2px 10px; background: var(--panel); }
+.group textarea { flex: 1; }
+.steps li { margin: 6px 0; }
+.steps input { min-width: 260px; }
+code { background: var(--bg); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+.modal-box.wide { width: min(760px, 94vw); max-height: 85vh; overflow: auto; }
+.el-row { display: flex; gap: 12px; padding: 6px 0; border-top: 1px solid var(--border); }
+.el-row b { min-width: 130px; }
+.el-row.warning, .el-row.error { color: var(--danger); }
+.el-row.done { color: var(--ok); }

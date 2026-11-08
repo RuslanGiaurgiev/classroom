@@ -124,6 +124,7 @@ class TeacherServer:
             web.delete("/ui/api/laptops/{number}", self.handle_ui_unpair),
             web.post("/ui/api/commands", self.handle_ui_command),
             web.put("/ui/api/settings", self.handle_ui_settings),
+            web.post("/ui/api/open-url", self.handle_ui_open_url),
             web.get("/ui/ws", self.handle_ui_ws),
         ])
         app.add_routes(self.files.routes())
@@ -170,6 +171,10 @@ class TeacherServer:
                 token = request.headers.get("X-UI-Token") or request.query.get("t", "")
                 if not secrets.compare_digest(token, self.ui_token):
                     raise web.HTTPUnauthorized(text="Нет доступа")
+            resp = await handler(request)
+            # Панель всегда берёт свежие файлы (после обновления не нужен «сброс кэша»)
+            resp.headers["Cache-Control"] = "no-cache"
+            return resp
         return await handler(request)
 
     # ================= Агенты =================
@@ -428,6 +433,17 @@ class TeacherServer:
             "search_engines": {k: v[0] for k, v in SEARCH_ENGINES.items()},
             "projects_root": str(self.projects_root()),
         }
+
+    async def handle_ui_open_url(self, request: web.Request) -> web.Response:
+        """Открыть страницу в обычном браузере Mac. Только страницы Яндекса для получения токена."""
+        url = str((await request.json()).get("url", ""))
+        if not url.startswith(("https://oauth.yandex.ru/", "https://yandex.ru/dev/disk")):
+            return web.json_response({"error": "Можно открывать только страницы oauth.yandex.ru"}, status=400)
+        import subprocess
+        import sys
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", url])
+        return web.json_response({"ok": True})
 
     async def handle_ui_settings(self, request: web.Request) -> web.Response:
         """Сохранить настройки (только известные поля, с проверкой)."""

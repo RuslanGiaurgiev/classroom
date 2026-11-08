@@ -46,3 +46,31 @@ def test_autorun_registry(wp, tmp_path):
 
 def test_detect_browsers_runs(wp):
     assert set(wp.detect_browsers()) <= {"chrome", "yandex", "edge"}
+
+
+def test_hidden_attribute(wp, tmp_path):
+    import ctypes
+    f = tmp_path / "secret.txt"
+    f.write_text("x")
+    assert not wp.is_hidden(f)
+    ctypes.windll.kernel32.SetFileAttributesW(str(f), 0x2)   # FILE_ATTRIBUTE_HIDDEN
+    assert wp.is_hidden(f)
+
+
+def test_close_missing_process(wp):
+    assert "не было запущено" in wp.close_processes(["no_such_program_zz.exe"])
+
+
+def test_overlay_starts_and_closes(wp, monkeypatch, tmp_path):
+    """Полноэкранное окно запускается отдельным процессом и закрывается по команде."""
+    import time
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    h = wp.spawn_overlay({"mode": "message", "text": "Тест", "seconds": 0})
+    time.sleep(4)
+    assert h.poll() is None, "окно должно быть открыто"
+    h.terminate()
+    for _ in range(50):
+        if h.poll() is not None:
+            break
+        time.sleep(0.1)
+    assert h.poll() is not None, "окно должно закрыться"
