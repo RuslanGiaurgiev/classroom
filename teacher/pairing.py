@@ -1,75 +1,122 @@
 """
-Одноразовые коды привязки ноутбуков.
+Подключение новых ноутбуков без ввода кодов.
 
-Учитель нажимает «Добавить ноутбук», вводит номер с наклейки →
-получает код, который действует 10 минут и срабатывает один раз.
+1. Агент сам находит учителя в сети и присылает «запрос на подключение»
+   (имя компьютера, пользователь, свой секрет запроса).
+2. В панели появляется запрос с двузначным «числом для сверки» — такое же
+   число крупно показано на экране ноутбука, чтобы не перепутать ноутбуки.
+3. Учитель вводит номер ноутбука и нажимает «Принять». Только после этого
+   ноутбук получает постоянный токен (забирает его, предъявив секрет запроса).
+
+Без нажатия «Принять» ноутбук ничего не получает — посторонний в сети
+не сможет подключиться сам.
 """
 
 from __future__ import annotations
 
+import hashlib
+import random
 import secrets
 import time
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, field
 
-from shared.pairing import PairingCode, generate_secret, normalize_secret
+REQUEST_TTL_SECONDS = 15 * 60   # сколько живёт неподтверждённый запрос
+MAX_PENDING = 40                # защита от засорения панели
 
-CODE_TTL_SECONDS = 10 * 60
 
-# Защита от перебора: не больше стольких неудачных попыток в минуту
-MAX_FAILED_PER_MINUTE = 20
+def _h(s: str) -> str:
+    return hashlib.sha256(s.encode()).hexdigest()
 
 
 @dataclass
-class PendingCode:
-    number: str
-    secret: str
-    expires_at: float
+class PairRequest:
+    id: str
+    secret_hash: str
+    hostname: str
+    username: str
+    ip: str
+    match_code: str
+    created_at: float
+    status: str = "pending"            # pending | approved | rejected
+    laptop_number: str = ""
+    token: str = field(default="", repr=False)
+
+    def public(self) -> dict:
+        """Что показываем в панели."""
+        return {
+            "id": self.id,
+            "hostname": self.hostname,
+            "username": self.username,
+            "ip": self.ip,
+            "match_code": self.match_code,
+            "created_at": self.created_at,
+        }
 
 
-class PairingManager:
+class PairRequestManager:
     def __init__(self, clock=time.time):
         self._clock = clock
-        self._codes: dict[str, PendingCode] = {}  # secret -> код
-        self._failures: list[float] = []
+        self._requests: dict[str, PairRequest] = {}
 
-    def create(self, number: str, host: str, port: int) -> tuple[PairingCode, float]:
-        """Создать код для ноутбука с номером number. Старый код того же номера аннулируется."""
+    def create(self, hostname: str, username: str, secret: str, ip: str) -> PairRequest:
+        """Новый запрос. Повторный запрос с того же компьютера заменяет старый."""
         self._cleanup()
-        for s, c in list(self._codes.items()):
-            if c.number == number:
-                del self._codes[s]
-        secret = generate_secret()
-        while secret in self._codes:
-            secret = generate_secret()
-        expires = self._clock() + CODE_TTL_SECONDS
-        self._codes[secret] = PendingCode(number=number, secret=secret, expires_at=expires)
-        return PairingCode(host=host, port=port, secret=secret), expires
+        for rid, r in list(self._requests.items()):
+            if r.status == "pending" and r.ip == ip and r.hostname == hostname:
+                del self._requests[rid]
+        if sum(r.status == "pending" for r in self._requests.values()) >= MAX_PENDING:
+            raise OverflowError("Слишком много неподтверждённых запросов")
+        used = {r.match_code for r in self._requests.values() if r.status == "pending"}
+        match_code = random.choice([f"{n:02d}" for n in range(10, 100) if f"{n:02d}" not in used])
+        req = PairRequest(
+            id=uuid.uuid4().hex,
+            secret_hash=_h(secret),
+            hostname=hostname[:100],
+            username=username[:100],
+            ip=ip,
+            match_code=match_code,
+            created_at=self._clock(),
+        )
+        self._requests[req.id] = req
+        return req
 
-    def redeem(self, secret: str) -> str | None:
-        """
-        Погасить код. Возвращает номер ноутбука или None, если код неверный,
-        просрочен или уже использован.
-        """
+    def pending(self) -> list[PairRequest]:
         self._cleanup()
-        if self.is_rate_limited():
-            return None
-        secret = normalize_secret(secret)
-        found = None
-        for s in self._codes:
-            if secrets.compare_digest(s, secret):
-                found = s
-        if found is None:
-            self._failures.append(self._clock())
-            return None
-        return self._codes.pop(found).number
+        return sorted((r for r in self._requests.values() if r.status == "pending"), key=lambda r: r.created_at)
 
-    def is_rate_limited(self) -> bool:
-        now = self._clock()
-        self._failures = [t for t in self._failures if now - t < 60]
-        return len(self._failures) >= MAX_FAILED_PER_MINUTE
+    def get(self, request_id: str) -> PairRequest | None:
+        self._cleanup()
+        return self._requests.get(request_id)
+
+    def approve(self, request_id: str, laptop_number: str, token: str) -> PairRequest | None:
+        req = self.get(request_id)
+        if req is None or req.status != "pending":
+            return None
+        req.status, req.laptop_number, req.token = "approved", laptop_number, token
+        return req
+
+    def reject(self, request_id: str) -> bool:
+        req = self.get(request_id)
+        if req is None or req.status != "pending":
+            return False
+        req.status = "rejected"
+        return True
+
+    def poll(self, request_id: str, secret: str) -> PairRequest | None:
+        """
+        Агент спрашивает «меня уже приняли?». Нужен секрет запроса, который знает
+        только этот агент. Выданный токен отдаётся один раз — после этого запрос удаляется.
+        """
+        req = self.get(request_id)
+        if req is None or not secrets.compare_digest(req.secret_hash, _h(secret)):
+            return None
+        if req.status in ("approved", "rejected"):
+            del self._requests[request_id]
+        return req
 
     def _cleanup(self) -> None:
         now = self._clock()
-        for s, c in list(self._codes.items()):
-            if c.expires_at <= now:
-                del self._codes[s]
+        for rid, r in list(self._requests.items()):
+            if now - r.created_at > REQUEST_TTL_SECONDS:
+                del self._requests[rid]

@@ -1,6 +1,9 @@
-"""Одноразовые коды привязки на стороне учителя."""
+"""Запросы на подключение (учитель) и разбор вручную введённого адреса (агент)."""
 
-from teacher.pairing import CODE_TTL_SECONDS, MAX_FAILED_PER_MINUTE, PairingManager
+import pytest
+
+from agent.pairing import parse_manual_address
+from teacher.pairing import REQUEST_TTL_SECONDS, PairRequestManager
 
 
 class Clock:
@@ -11,36 +14,58 @@ class Clock:
         return self.t
 
 
-def test_code_is_one_time():
-    pm = PairingManager()
-    code, _ = pm.create("5", "10.0.0.2", 8765)
-    assert pm.redeem(code.secret.lower()) == "5"
-    assert pm.redeem(code.secret) is None
+def test_request_lifecycle():
+    pm = PairRequestManager()
+    r = pm.create("PC-1", "Маша", "secret-123456789", "10.0.0.5")
+    assert len(r.match_code) == 2 and pm.pending() == [r]
+    assert pm.poll(r.id, "secret-123456789").status == "pending"
+    assert pm.poll(r.id, "wrong") is None
+    pm.approve(r.id, "5", "TOKEN")
+    assert pm.pending() == []
+    got = pm.poll(r.id, "secret-123456789")
+    assert (got.status, got.token, got.laptop_number) == ("approved", "TOKEN", "5")
+    assert pm.poll(r.id, "secret-123456789") is None  # токен отдаётся один раз
 
 
-def test_code_expires_after_10_minutes():
+def test_cannot_approve_twice_or_after_reject():
+    pm = PairRequestManager()
+    r = pm.create("PC-1", "", "s" * 20, "10.0.0.5")
+    assert pm.reject(r.id)
+    assert pm.approve(r.id, "1", "T") is None
+
+
+def test_repeat_request_from_same_pc_replaces_old():
+    pm = PairRequestManager()
+    r1 = pm.create("PC-1", "", "s" * 20, "10.0.0.5")
+    r2 = pm.create("PC-1", "", "t" * 20, "10.0.0.5")
+    assert pm.pending() == [r2] and pm.get(r1.id) is None
+
+
+def test_match_codes_unique_among_pending():
+    pm = PairRequestManager()
+    codes = {pm.create(f"PC-{i}", "", "s" * 20, f"10.0.0.{i}").match_code for i in range(30)}
+    assert len(codes) == 30
+
+
+def test_requests_expire():
     clock = Clock()
-    pm = PairingManager(clock=clock)
-    code, expires = pm.create("5", "10.0.0.2", 8765)
-    assert expires == clock.t + CODE_TTL_SECONDS
-    clock.t += CODE_TTL_SECONDS + 1
-    assert pm.redeem(code.secret) is None
+    pm = PairRequestManager(clock=clock)
+    r = pm.create("PC-1", "", "s" * 20, "10.0.0.5")
+    clock.t += REQUEST_TTL_SECONDS + 1
+    assert pm.pending() == [] and pm.approve(r.id, "1", "T") is None
 
 
-def test_new_code_for_same_number_cancels_old():
-    pm = PairingManager()
-    old, _ = pm.create("5", "10.0.0.2", 8765)
-    new, _ = pm.create("5", "10.0.0.2", 8765)
-    assert pm.redeem(old.secret) is None
-    assert pm.redeem(new.secret) == "5"
-
-
-def test_bruteforce_is_rate_limited():
-    clock = Clock()
-    pm = PairingManager(clock=clock)
-    code, _ = pm.create("5", "10.0.0.2", 8765)
-    for _ in range(MAX_FAILED_PER_MINUTE):
-        assert pm.redeem("ZZZZZZZZ") is None
-    assert pm.redeem(code.secret) is None  # заблокировано даже с верным кодом
-    clock.t += 61
-    assert pm.redeem(code.secret) == "5"
+@pytest.mark.parametrize("text, expected", [
+    ("192.168.3.96", ("192.168.3.96", 8765)),
+    (" 192.168.3.96 ", ("192.168.3.96", 8765)),
+    ("192,168,3,96", ("192.168.3.96", 8765)),
+    ("192ю168ю3ю96", ("192.168.3.96", 8765)),          # русская раскладка
+    ("http://192.168.3.96:8765/", ("192.168.3.96", 8765)),
+    ("192.168.3.96:9000", ("192.168.3.96", 9000)),
+    ("192.168.3", None),
+    ("300.1.1.1", None),
+    ("mac.local", None),
+    ("", None),
+])
+def test_manual_address(text, expected):
+    assert parse_manual_address(text) == expected

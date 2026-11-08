@@ -1,10 +1,9 @@
-"""Протокол и формат кода привязки."""
+"""Протокол."""
 
 import json
 
 import pytest
 
-from shared.pairing import ALPHABET, SECRET_LEN, generate_secret, parse_code
 from shared.protocol import PROTOCOL_VERSION, Message, MsgType, ProtocolError, validate_command, validate_url
 
 
@@ -44,14 +43,3 @@ def test_only_known_actions():
         validate_command("open_urls", {"urls": ["a.ru"], "browser": "opera"})
     act, params = validate_command("open_urls", {"urls": ["a.ru"]})
     assert params == {"urls": ["https://a.ru"], "browser": "default"}
-
-
-def test_pairing_code_format():
-    s = generate_secret()
-    assert len(s) == SECRET_LEN and all(c in ALPHABET for c in s)
-    code = parse_code(f" 192.168.1.10:8765-{s.lower()} ")
-    assert (code.host, code.port, code.secret) == ("192.168.1.10", 8765, s)
-    assert str(code) == f"192.168.1.10:8765-{s}"
-    for bad in ["", "abc", "999.1.1.1:8765-ABCDEFGH", "192.168.1.10:99999-ABCDEFGH", "192.168.1.10:8765-ABC"]:
-        with pytest.raises(ValueError):
-            parse_code(bad)

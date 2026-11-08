@@ -12,10 +12,14 @@
     <div class="conn" id="conn">подключение…</div>
     <div class="spacer"></div>
     <div class="mac-addr" id="macAddr"></div>
-    <button class="btn primary" id="btnAdd">+ Добавить ноутбук</button>
   </header>
 
   <main>
+    <section class="panel requests" id="requestsPanel" hidden>
+      <h2>Новые ноутбуки просят подключения</h2>
+      <p class="muted">Сверьте число с экраном ноутбука, введите номер с наклейки и нажмите «Принять».</p>
+      <div id="requests"></div>
+    </section>
     <section class="panel">
       <h2>Открыть сайт</h2>
       <div class="row">
@@ -44,7 +48,8 @@
         <label class="selall"><input type="checkbox" id="selectAll"> выбрать все</label>
       </div>
       <div class="grid" id="grid"></div>
-      <p class="empty muted" id="empty" hidden>Пока нет ни одного ноутбука. Нажмите «Добавить ноутбук».</p>
+      <p class="empty muted" id="empty" hidden>Пока нет ни одного ноутбука. Чтобы добавить ноутбук,
+        запустите на нём agent.exe — он сам появится вверху в разделе «Новые ноутбуки».</p>
     </section>
 
     <section class="panel">
@@ -52,32 +57,6 @@
       <ul class="log" id="log"></ul>
     </section>
   </main>
-
-  <!-- Окно добавления ноутбука -->
-  <div class="modal" id="modalAdd" hidden>
-    <div class="modal-box">
-      <h2>Добавить ноутбук</h2>
-      <div id="addStep1">
-        <p>Введите номер ноутбука с наклейки на мониторе:</p>
-        <input id="laptopNumber" type="text" maxlength="10" placeholder="Например, 5">
-        <div class="row">
-          <div class="spacer"></div>
-          <button class="btn" data-close>Отмена</button>
-          <button class="btn primary" id="btnMakeCode">Получить код</button>
-        </div>
-      </div>
-      <div id="addStep2" hidden>
-        <p>На ноутбуке <b id="codeNumber"></b> запустите агент и введите этот код:</p>
-        <div class="code" id="codeText"></div>
-        <p class="muted">Код одноразовый, действует ещё <span id="codeTimer"></span>.</p>
-        <div class="row">
-          <div class="spacer"></div>
-          <button class="btn primary" data-close>Готово</button>
-        </div>
-      </div>
-      <p class="error" id="addError"></p>
-    </div>
-  </div>
 
   <script src="/ui/static/app.js"></script>
 </body>

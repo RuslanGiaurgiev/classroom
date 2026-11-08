@@ -9,7 +9,8 @@ import json
 import aiohttp
 import pytest
 
-from agent.client import AgentClient, Backoff, PairingError, pair_with_code
+from agent.client import AgentClient, Backoff
+from agent.pairing import PairingCancelled, PairingFlow
 from agent.platform.fake import FakePlatform
 from agent.state import AgentState
 from shared.protocol import Message, MsgType
@@ -35,14 +36,33 @@ async def teacher(tmp_path):
     await server.stop()
 
 
-def new_code(server: TeacherServer, number: str) -> str:
-    code, _ = server.pairing.create(number, "127.0.0.1", server.port)
-    return str(code)
+async def ui(server, method, path, **kw):
+    async with aiohttp.ClientSession() as s:
+        async with s.request(method, f"http://127.0.0.1:{server.port}{path}",
+                             headers={"X-UI-Token": server.ui_token}, **kw) as r:
+            return r.status, await r.json()
+
+
+async def approve_when_requested(server, hostname, number):
+    """Ждём запрос от ноутбука и нажимаем «Принять», как учитель в панели."""
+    await wait_for(lambda: any(r.hostname == hostname for r in server.pairing.pending()))
+    req = next(r for r in server.pairing.pending() if r.hostname == hostname)
+    status, _ = await ui(server, "POST", f"/ui/api/pair-requests/{req.id}/approve", json={"number": number})
+    assert status == 200
+
+
+async def pair(server, platform, number):
+    flow = PairingFlow(platform, discover_port=server.port, discover_targets=["127.0.0.1"], poll_interval=0.05)
+    approver = asyncio.create_task(approve_when_requested(server, platform.hostname(), number))
+    state = await asyncio.wait_for(flow.run(), 10)
+    await approver
+    return state
 
 
 async def start_agent(server, tmp_path, number="1", **platform_kw):
+    platform_kw.setdefault("hostname", f"PC-{number}")
     platform = FakePlatform(tmp_path / f"agent-{number}", **platform_kw)
-    state = await pair_with_code(new_code(server, number), platform)
+    state = await pair(server, platform, number)
     client = AgentClient(platform, state, use_mdns=False, backoff=Backoff(initial=0.05, maximum=0.2))
     task = asyncio.create_task(client.run())
     await asyncio.wait_for(client.connected.wait(), 5)
@@ -58,7 +78,7 @@ async def test_pair_connect_status_and_open_url(teacher, tmp_path):
     platform, client, task = await start_agent(teacher, tmp_path, "3", username="Маша", browsers=["yandex"])
     snap = teacher.state_snapshot()
     assert snap["laptops"] == [{
-        "number": "3", "online": True, "username": "Маша", "hostname": "FAKE-PC", "ip": "127.0.0.1",
+        "number": "3", "online": True, "username": "Маша", "hostname": "PC-3", "ip": "127.0.0.1",
         "agent_version": snap["laptops"][0]["agent_version"], "browsers": ["yandex"],
         "pending_files": 0, "last_seen": snap["laptops"][0]["last_seen"],
     }]
@@ -90,11 +110,71 @@ async def test_offline_laptop_reported(teacher, tmp_path):
     assert r["statuses"] == {"1": "offline"}
 
 
-async def test_code_cannot_be_reused(teacher, tmp_path):
-    code = new_code(teacher, "1")
-    await pair_with_code(code, FakePlatform(tmp_path / "a"))
-    with pytest.raises(PairingError):
-        await pair_with_code(code, FakePlatform(tmp_path / "b"))
+async def test_laptop_found_by_broadcast_and_approved(teacher, tmp_path):
+    """Ноутбук сам находит учителя (UDP), ждёт «Принять», получает токен — ничего не вводя."""
+    platform = FakePlatform(tmp_path / "a", hostname="PC-7", username="Петя")
+    statuses = []
+    flow = PairingFlow(platform, on_status=statuses.append, discover_port=teacher.port,
+                       discover_targets=["127.0.0.1"], poll_interval=0.05)
+    task = asyncio.create_task(flow.run())
+    await wait_for(lambda: teacher.state_snapshot()["pair_requests"])
+    req = teacher.state_snapshot()["pair_requests"][0]
+    assert (req["hostname"], req["username"]) == ("PC-7", "Петя")
+    # Пока учитель не нажал «Принять», ноутбук не привязан и токена не получил
+    await asyncio.sleep(0.2)
+    assert not task.done() and teacher.storage.laptops() == {}
+    waiting = [s for s in statuses if s.stage == "waiting"]
+    assert waiting and waiting[0].match_code == req["match_code"]  # одно и то же число на обоих экранах
+
+    status, _ = await ui(teacher, "POST", f"/ui/api/pair-requests/{req['id']}/approve", json={"number": "7"})
+    assert status == 200
+    state = await asyncio.wait_for(task, 5)
+    assert state.laptop_number == "7" and state.teacher_id == teacher.storage.teacher_id
+    assert AgentState.load(platform).token == state.token
+    assert teacher.storage.find_laptop_by_token(state.token) == "7"
+    assert teacher.state_snapshot()["pair_requests"] == []
+
+
+async def test_rejected_request(teacher, tmp_path):
+    flow = PairingFlow(FakePlatform(tmp_path / "a"), discover_port=teacher.port,
+                       discover_targets=["127.0.0.1"], poll_interval=0.05)
+    task = asyncio.create_task(flow.run())
+    await wait_for(lambda: teacher.state_snapshot()["pair_requests"])
+    rid = teacher.state_snapshot()["pair_requests"][0]["id"]
+    await ui(teacher, "POST", f"/ui/api/pair-requests/{rid}/reject")
+    with pytest.raises(PairingCancelled):
+        await asyncio.wait_for(task, 5)
+    assert teacher.storage.laptops() == {}
+
+
+async def test_token_only_for_request_owner(teacher):
+    """Чужой не может забрать токен, зная id запроса, — нужен секрет, который знает только ноутбук."""
+    async with aiohttp.ClientSession() as s:
+        base = f"http://127.0.0.1:{teacher.port}"
+        async with s.post(f"{base}/api/pair-request", json={"secret": "x" * 32, "hostname": "PC"}) as r:
+            rid = (await r.json())["request_id"]
+        await ui(teacher, "POST", f"/ui/api/pair-requests/{rid}/approve", json={"number": "1"})
+        async with s.get(f"{base}/api/pair-request/{rid}", headers={"X-Pair-Secret": "y" * 32}) as r:
+            assert r.status == 404 and "token" not in await r.json()
+        async with s.get(f"{base}/api/pair-request/{rid}", headers={"X-Pair-Secret": "x" * 32}) as r:
+            assert (await r.json())["status"] == "approved"
+        # Токен выдаётся один раз
+        async with s.get(f"{base}/api/pair-request/{rid}", headers={"X-Pair-Secret": "x" * 32}) as r:
+            assert r.status == 404
+
+
+async def test_manual_address_fallback(teacher, tmp_path):
+    """Если широковещательный поиск не работает, можно ввести адрес Mac вручную."""
+    platform = FakePlatform(tmp_path / "a", hostname="PC-9")
+    flow = PairingFlow(platform, discover_port=1, discover_targets=["127.0.0.1"], poll_interval=0.05)
+    task = asyncio.create_task(flow.run())
+    await asyncio.sleep(0.5)
+    assert teacher.state_snapshot()["pair_requests"] == []  # не нашли
+    flow.manual_address = ("127.0.0.1", teacher.port)
+    approver = asyncio.create_task(approve_when_requested(teacher, "PC-9", "9"))
+    state = await asyncio.wait_for(task, 10)
+    await approver
+    assert state.laptop_number == "9"
 
 
 async def test_requests_without_valid_token_rejected(teacher):

@@ -1,5 +1,5 @@
 """
-Связь агента с учителем: привязка по коду и постоянное WebSocket-соединение
+Связь агента с учителем: постоянное WebSocket-соединение
 с автоматическим переподключением (экспоненциальная задержка).
 """
 
@@ -13,12 +13,10 @@ from typing import Callable
 import aiohttp
 
 from agent import __version__
-from agent.discovery import find_teacher
+from agent.discovery import broadcast_discover, find_teacher
 from agent.platform.base import Platform
 from agent.state import AgentState
-from shared.pairing import parse_code
 from shared.protocol import (
-    PROTOCOL_VERSION,
     Action,
     Message,
     MsgType,
@@ -32,43 +30,6 @@ log = logging.getLogger(__name__)
 CLOSE_REPLACED = 4001   # тот же ноутбук подключился ещё раз
 CLOSE_PROTOCOL = 4002   # несовместимая версия протокола
 CLOSE_UNPAIRED = 4003   # учитель отвязал ноутбук
-
-
-class PairingError(Exception):
-    """Понятная учителю ошибка привязки."""
-
-
-async def pair_with_code(code_text: str, platform: Platform, timeout: float = 10) -> AgentState:
-    """Обменять одноразовый код на постоянный токен."""
-    try:
-        code = parse_code(code_text)
-    except ValueError as e:
-        raise PairingError(str(e)) from e
-    url = f"http://{code.host}:{code.port}/api/pair"
-    body = {"secret": code.secret, "hostname": platform.hostname(), "username": platform.username()}
-    try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as s:
-            async with s.post(url, json=body) as r:
-                data = await r.json(content_type=None)
-                if r.status != 200:
-                    raise PairingError(data.get("error") or f"Ошибка {r.status}")
-    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-        raise PairingError(
-            f"Не удалось связаться с компьютером учителя ({code.host}:{code.port}). "
-            "Проверьте, что приложение учителя запущено и ноутбук в той же сети."
-        ) from e
-    if data.get("protocol_version") != PROTOCOL_VERSION:
-        raise PairingError("Версия агента не подходит к приложению учителя — обновите агент")
-    state = AgentState(
-        teacher_id=data["teacher_id"],
-        laptop_number=str(data["laptop_number"]),
-        host=code.host,
-        port=code.port,
-        token=data["token"],
-    )
-    state.save(platform)
-    log.info("Привязка выполнена: ноутбук %s", state.laptop_number)
-    return state
 
 
 class Backoff:
@@ -140,14 +101,17 @@ class AgentClient:
             await self._ws.close()
 
     async def _candidates(self) -> list[tuple[str, int]]:
-        """Куда подключаться: сначала адреса из mDNS, потом последний известный."""
+        """Куда подключаться: адреса из mDNS и широковещательного поиска, потом последний известный."""
         result: list[tuple[str, int]] = []
         if self.use_mdns:
             found = await find_teacher(self.state.teacher_id)
-            if found:
-                if found[0] != (self.state.host, self.state.port):
-                    log.info("mDNS: учитель найден на %s", found)
-                result.extend(found)
+            found += [(f["ip"], int(f["port"])) for f in await broadcast_discover(self.state.port)
+                      if f.get("teacher_id") == self.state.teacher_id]
+            for addr in found:
+                if addr not in result:
+                    result.append(addr)
+            if result and result[0] != (self.state.host, self.state.port):
+                log.info("Учитель найден на %s", result)
         last = (self.state.host, self.state.port)
         if last not in result:
             result.append(last)

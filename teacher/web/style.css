@@ -84,3 +84,8 @@ textarea { width: 100%; resize: vertical; }
   user-select: all; word-break: break-all;
 }
 .error { color: var(--danger); min-height: 1em; margin: 8px 0 0; }
+.requests { border-color: var(--accent); }
+.req { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-top: 1px solid var(--border); flex-wrap: wrap; }
+.req .match { font: 700 34px/1 ui-monospace, Menlo, monospace; color: var(--accent); min-width: 56px; text-align: center; }
+.req-info { flex: 1; min-width: 160px; }
+.req-num { width: 90px; font-size: 16px; }

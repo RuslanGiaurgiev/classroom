@@ -31,6 +31,11 @@ DEFAULT_PORT = 8765
 # Заголовок для токена ноутбука
 AUTH_HEADER = "Authorization"
 
+# Поиск учителя широковещательным UDP-запросом (на тот же номер порта, что и HTTP).
+# Нужен при первом подключении, когда агент ещё не знает teacher_id,
+# и как запасной вариант к mDNS.
+DISCOVERY_REQUEST = b"CLASSROOM_DISCOVER_V1"
+
 
 def service_name(teacher_id: str) -> str:
     """Имя mDNS-сервиса конкретного учителя (агент знает teacher_id после привязки)."""

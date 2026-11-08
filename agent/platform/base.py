@@ -10,6 +10,11 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from agent.pairing import PairingFlow
+    from agent.state import AgentState
 
 
 class Platform(ABC):
@@ -71,8 +76,11 @@ class Platform(ABC):
     # ---------- Диалоги (только при первой настройке, видит учитель) ----------
 
     @abstractmethod
-    def ask_pairing_code(self, error: str | None = None) -> str | None:
-        """Спросить код привязки. None — пользователь нажал «Отмена»."""
+    def run_pairing_window(self, flow: "PairingFlow") -> "AgentState | None":
+        """
+        Показать окно первого подключения и выполнить flow.run().
+        Возвращает состояние после «Принять» у учителя или None, если окно закрыли.
+        """
 
     @abstractmethod
     def show_info(self, title: str, text: str) -> None:

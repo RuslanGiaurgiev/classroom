@@ -31,7 +31,6 @@ class FakePlatform(Platform):
         self.label = label or hostname
         self.actions: list[tuple] = []  # журнал выполненных действий (для тестов)
         self.autorun: Path | None = None
-        self.pairing_answers: list[str | None] = []  # ответы для ask_pairing_code
         self.infos: list[tuple[str, str]] = []
 
     def username(self) -> str:
@@ -79,8 +78,14 @@ class FakePlatform(Platform):
         log.info("[%s] открыть %s (%s) → %s", self.label, urls, browser, msg)
         return msg
 
-    def ask_pairing_code(self, error: str | None = None) -> str | None:
-        return self.pairing_answers.pop(0) if self.pairing_answers else None
+    def run_pairing_window(self, flow):
+        import asyncio
+
+        from agent.pairing import PairingCancelled
+        try:
+            return asyncio.run(flow.run())
+        except PairingCancelled:
+            return None
 
     def show_info(self, title: str, text: str) -> None:
         self.infos.append((title, text))

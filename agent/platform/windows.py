@@ -250,35 +250,9 @@ class WindowsPlatform(Platform):
 
     # ---------- Диалоги ----------
 
-    def ask_pairing_code(self, error: str | None = None) -> str | None:
-        import tkinter as tk
-
-        result: dict[str, str | None] = {"code": None}
-        root = tk.Tk()
-        root.title("Подключение к компьютеру учителя")
-        root.attributes("-topmost", True)
-        root.resizable(False, False)
-        frm = tk.Frame(root, padx=20, pady=16)
-        frm.pack()
-        tk.Label(frm, text="Введите код из приложения учителя:", font=("Segoe UI", 11)).pack(anchor="w")
-        tk.Label(frm, text="например: 192.168.1.10:8765-K7M2QX9P", fg="#777").pack(anchor="w")
-        entry = tk.Entry(frm, width=34, font=("Consolas", 14))
-        entry.pack(pady=8)
-        entry.focus_set()
-        if error:
-            tk.Label(frm, text=error, fg="#c62828", wraplength=380, justify="left").pack(anchor="w")
-
-        def ok(_=None):
-            result["code"] = entry.get()
-            root.destroy()
-
-        btns = tk.Frame(frm)
-        btns.pack(fill="x", pady=(8, 0))
-        tk.Button(btns, text="Отмена", width=10, command=root.destroy).pack(side="right")
-        tk.Button(btns, text="Подключить", width=12, command=ok).pack(side="right", padx=6)
-        root.bind("<Return>", ok)
-        root.mainloop()
-        return result["code"]
+    def run_pairing_window(self, flow):
+        from agent.pairing_window import run_pairing_window
+        return run_pairing_window(flow)
 
     def show_info(self, title: str, text: str) -> None:
         import tkinter as tk

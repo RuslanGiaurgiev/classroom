@@ -2,13 +2,15 @@
 HTTP + WebSocket сервер учителя (aiohttp).
 
 Маршруты для агентов (доступны из сети):
-    POST /api/pair        — привязка по одноразовому коду → постоянный токен
+    POST /api/pair-request       — ноутбук просит подключить его
+    GET  /api/pair-request/{id}  — ноутбук узнаёт, принял ли учитель (и забирает токен)
     GET  /ws/agent        — WebSocket агента (заголовок Authorization: Bearer <токен>)
 
 Маршруты панели (только с самого Mac + токен панели):
     GET  /ui/                    — страница панели
     GET  /ui/api/state           — список ноутбуков
-    POST /ui/api/pairing-codes   — создать код привязки
+    POST /ui/api/pair-requests/{id}/approve — принять новый ноутбук (с номером)
+    POST /ui/api/pair-requests/{id}/reject  — отклонить
     DELETE /ui/api/laptops/{n}   — отвязать ноутбук
     POST /ui/api/commands        — отправить команду
     GET  /ui/ws                  — живые обновления для панели
@@ -37,7 +39,8 @@ from shared.protocol import (
     validate_command,
 )
 from teacher.netutil import is_loopback, primary_ipv4
-from teacher.pairing import PairingManager
+from teacher.pairing import PairRequestManager
+from teacher.udp_discovery import start_responder
 from teacher.storage import Storage
 
 log = logging.getLogger(__name__)
@@ -65,29 +68,32 @@ class TeacherServer:
     def __init__(
         self,
         storage: Storage,
-        pairing: PairingManager | None = None,
+        pairing: PairRequestManager | None = None,
         host_ip_fn: Callable[[], str] = primary_ipv4,
     ):
         self.storage = storage
-        self.pairing = pairing or PairingManager()
+        self.pairing = pairing or PairRequestManager()
         self.host_ip_fn = host_ip_fn
         self.ui_token = storage.get_ui_token()
         self.agents: dict[str, AgentConn] = {}
         self.ui_clients: set[web.WebSocketResponse] = set()
         self.port: int = storage.port  # реальный порт уточняется после запуска
         self._runner: web.AppRunner | None = None
+        self._udp = None
 
     # ================= Запуск / остановка =================
 
     def build_app(self) -> web.Application:
         app = web.Application(middlewares=[self._ui_guard], client_max_size=1024 * 1024)
         app.add_routes([
-            web.post("/api/pair", self.handle_pair),
+            web.post("/api/pair-request", self.handle_pair_request),
+            web.get("/api/pair-request/{id}", self.handle_pair_poll),
             web.get("/ws/agent", self.handle_agent_ws),
             web.get("/", self.handle_root),
             web.get("/ui/", self.handle_ui_index),
             web.get("/ui/api/state", self.handle_ui_state),
-            web.post("/ui/api/pairing-codes", self.handle_ui_create_code),
+            web.post("/ui/api/pair-requests/{id}/approve", self.handle_ui_approve),
+            web.post("/ui/api/pair-requests/{id}/reject", self.handle_ui_reject),
             web.delete("/ui/api/laptops/{number}", self.handle_ui_unpair),
             web.post("/ui/api/commands", self.handle_ui_command),
             web.get("/ui/ws", self.handle_ui_ws),
@@ -95,7 +101,7 @@ class TeacherServer:
         app.router.add_static("/ui/static/", WEB_DIR)
         return app
 
-    async def start(self, host: str = "0.0.0.0", port: int | None = None) -> int:
+    async def start(self, host: str = "0.0.0.0", port: int | None = None, udp_discovery: bool = True) -> int:
         """Запустить сервер. port=0 — случайный свободный (для тестов). Возвращает порт."""
         self._runner = web.AppRunner(self.build_app(), access_log=None)
         await self._runner.setup()
@@ -103,6 +109,9 @@ class TeacherServer:
         await site.start()
         self.port = self._runner.addresses[0][1]
         log.info("Сервер запущен на %s:%s", host, self.port)
+        if udp_discovery:
+            # Отвечаем на широковещательный поиск на том же номере порта (UDP)
+            self._udp = await start_responder(self.storage.teacher_id, self.port)
         return self.port
 
     async def stop(self) -> None:
@@ -110,6 +119,8 @@ class TeacherServer:
             await conn.ws.close()
         for ws in list(self.ui_clients):
             await ws.close()
+        if self._udp:
+            self._udp.close()
         if self._runner:
             await self._runner.cleanup()
 
@@ -129,41 +140,42 @@ class TeacherServer:
 
     # ================= Агенты =================
 
-    async def handle_pair(self, request: web.Request) -> web.Response:
-        """Привязка ноутбука по одноразовому коду."""
-        if self.pairing.is_rate_limited():
-            return web.json_response({"error": "Слишком много попыток, подождите минуту"}, status=429)
+    async def handle_pair_request(self, request: web.Request) -> web.Response:
+        """Ноутбук просит подключить его. Токен он получит только после «Принять» в панели."""
         try:
             body = await request.json()
             secret = str(body["secret"])
+            if len(secret) < 16:
+                raise ValueError
         except Exception:
             return web.json_response({"error": "Некорректный запрос"}, status=400)
-
-        number = self.pairing.redeem(secret)
-        if number is None:
-            log.warning("Неверный или просроченный код привязки с %s", request.remote)
-            return web.json_response({"error": "Код неверный или устарел. Получите новый в панели учителя."}, status=403)
-
-        token = secrets.token_urlsafe(32)
-        self.storage.add_laptop(number, token)
-        self.storage.update_laptop_info(
-            number,
-            hostname=str(body.get("hostname", ""))[:100],
-            username=str(body.get("username", ""))[:100],
-        )
-        # Если под этим номером уже был подключён другой ноутбук — отключаем его
-        old = self.agents.get(number)
-        if old:
-            await old.ws.close(code=4001, message=b"replaced")
-        log.info("Ноутбук %s привязан (%s)", number, request.remote)
+        try:
+            req = self.pairing.create(
+                hostname=str(body.get("hostname", "")),
+                username=str(body.get("username", "")),
+                secret=secret,
+                ip=request.remote or "",
+            )
+        except OverflowError as e:
+            return web.json_response({"error": str(e)}, status=429)
+        log.info("Запрос на подключение: %s (%s), число %s", req.hostname, req.ip, req.match_code)
         await self.broadcast_state()
-        await self.broadcast_event({"kind": "paired", "number": number})
-        return web.json_response({
-            "token": token,
-            "laptop_number": number,
-            "teacher_id": self.storage.teacher_id,
-            "protocol_version": PROTOCOL_VERSION,
-        })
+        return web.json_response({"request_id": req.id, "match_code": req.match_code,
+                                  "protocol_version": PROTOCOL_VERSION})
+
+    async def handle_pair_poll(self, request: web.Request) -> web.Response:
+        req = self.pairing.poll(request.match_info["id"], request.headers.get("X-Pair-Secret", ""))
+        if req is None:
+            return web.json_response({"status": "unknown"}, status=404)
+        if req.status == "approved":
+            return web.json_response({
+                "status": "approved",
+                "token": req.token,
+                "laptop_number": req.laptop_number,
+                "teacher_id": self.storage.teacher_id,
+                "protocol_version": PROTOCOL_VERSION,
+            })
+        return web.json_response({"status": req.status})
 
     def _auth_agent(self, request: web.Request) -> str | None:
         auth = request.headers.get("Authorization", "")
@@ -305,19 +317,36 @@ class TeacherServer:
             })
         return {
             "laptops": laptops,
+            "pair_requests": [r.public() for r in self.pairing.pending()],
             "teacher": {"ip": self.host_ip_fn(), "port": self.port, "teacher_id": self.storage.teacher_id},
         }
 
     async def handle_ui_state(self, request: web.Request) -> web.Response:
         return web.json_response(self.state_snapshot())
 
-    async def handle_ui_create_code(self, request: web.Request) -> web.Response:
+    async def handle_ui_approve(self, request: web.Request) -> web.Response:
         body = await request.json()
         number = str(body.get("number", "")).strip()
         if not LAPTOP_NUMBER_RE.match(number):
             return web.json_response({"error": "Номер: до 10 символов — цифры или буквы"}, status=400)
-        code, expires = self.pairing.create(number, self.host_ip_fn(), self.port)
-        return web.json_response({"code": str(code), "number": number, "expires_at": expires})
+        token = secrets.token_urlsafe(32)
+        req = self.pairing.approve(request.match_info["id"], number, token)
+        if req is None:
+            return web.json_response({"error": "Запрос уже не действует — перезапустите агент на ноутбуке"}, status=404)
+        self.storage.add_laptop(number, token)
+        self.storage.update_laptop_info(number, hostname=req.hostname, username=req.username)
+        # Если под этим номером был другой ноутбук — его старый токен больше не действует
+        old = self.agents.get(number)
+        if old:
+            await old.ws.close(code=4001, message=b"replaced")
+        log.info("Ноутбук %s принят (%s, %s)", number, req.hostname, req.ip)
+        await self.broadcast_state()
+        return web.json_response({"ok": True, "number": number})
+
+    async def handle_ui_reject(self, request: web.Request) -> web.Response:
+        ok = self.pairing.reject(request.match_info["id"])
+        await self.broadcast_state()
+        return web.json_response({"ok": ok})
 
     async def handle_ui_unpair(self, request: web.Request) -> web.Response:
         number = request.match_info["number"]

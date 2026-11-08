@@ -134,38 +134,70 @@ function openSites(targets) {
 $("btnOpenAll").onclick = () => openSites("all");
 $("btnOpenSelected").onclick = () => openSites([...selected]);
 
-// ---------- Добавление ноутбука ----------
-let codeTimer = null;
-function closeModal() {
-  $("modalAdd").hidden = true;
-  clearInterval(codeTimer);
+// ---------- Новые ноутбуки (запросы на подключение) ----------
+// Перерисовываем блок только когда меняется список запросов,
+// чтобы не стирать номер, который учитель сейчас вводит.
+let shownRequestIds = "";
+
+function suggestNumber(taken) {
+  for (let n = 1; n < 1000; n++) if (!taken.has(String(n))) return String(n);
+  return "";
 }
-$("btnAdd").onclick = () => {
-  $("addStep1").hidden = false; $("addStep2").hidden = true; $("addError").textContent = "";
-  $("laptopNumber").value = "";
-  $("modalAdd").hidden = false;
-  $("laptopNumber").focus();
-};
-document.querySelectorAll("[data-close]").forEach((b) => (b.onclick = closeModal));
-$("laptopNumber").onkeydown = (e) => { if (e.key === "Enter") $("btnMakeCode").click(); };
-$("btnMakeCode").onclick = async () => {
-  const number = $("laptopNumber").value.trim();
-  if (!number) { $("addError").textContent = "Введите номер"; return; }
-  if (state.laptops.some((l) => l.number === number) &&
-      !confirm(`Ноутбук ${number} уже привязан. Привязать заново (старая привязка перестанет работать)?`)) return;
-  try {
-    const r = await api("POST", "/ui/api/pairing-codes", { number });
-    $("codeNumber").textContent = r.number;
-    $("codeText").textContent = r.code;
-    $("addStep1").hidden = true; $("addStep2").hidden = false; $("addError").textContent = "";
-    const tick = () => {
-      const left = Math.max(0, Math.round(r.expires_at - Date.now() / 1000));
-      $("codeTimer").textContent = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`;
-      if (left === 0) { clearInterval(codeTimer); $("codeText").textContent = "Код устарел — получите новый"; }
+
+function renderRequests() {
+  const reqs = state.pair_requests || [];
+  const ids = reqs.map((r) => r.id).join(",");
+  $("requestsPanel").hidden = reqs.length === 0;
+  if (ids === shownRequestIds) return;
+  shownRequestIds = ids;
+  const box = $("requests");
+  box.innerHTML = "";
+  const taken = new Set(state.laptops.map((l) => l.number));
+  for (const r of reqs) {
+    const row = document.createElement("div");
+    row.className = "req";
+    const code = document.createElement("div");
+    code.className = "match";
+    code.textContent = r.match_code;
+    code.title = "Число для сверки — такое же на экране ноутбука";
+    const info = document.createElement("div");
+    info.className = "req-info";
+    info.innerHTML = "";
+    const b = document.createElement("b");
+    b.textContent = r.hostname || "Ноутбук";
+    const meta = document.createElement("div");
+    meta.className = "meta muted";
+    meta.textContent = `пользователь ${r.username || "—"} · ${r.ip}`;
+    info.append(b, meta);
+    const num = document.createElement("input");
+    num.type = "text";
+    num.maxLength = 10;
+    num.placeholder = "номер";
+    num.className = "req-num";
+    num.value = suggestNumber(taken);
+    taken.add(num.value);
+    const ok = document.createElement("button");
+    ok.className = "btn primary";
+    ok.textContent = "Принять";
+    ok.onclick = async () => {
+      const number = num.value.trim();
+      if (!number) { num.focus(); return; }
+      if (state.laptops.some((l) => l.number === number) &&
+          !confirm(`Номер ${number} уже занят другим ноутбуком. Заменить (старый ноутбук отключится)?`)) return;
+      try { await api("POST", `/ui/api/pair-requests/${r.id}/approve`, { number }); log(`Ноутбук ${number} подключён (${r.hostname})`); }
+      catch (e) { log(e.message, true); }
     };
-    tick(); clearInterval(codeTimer); codeTimer = setInterval(tick, 1000);
-  } catch (e) { $("addError").textContent = e.message; }
-};
+    num.onkeydown = (e) => { if (e.key === "Enter") ok.click(); };
+    const no = document.createElement("button");
+    no.className = "btn";
+    no.textContent = "Отклонить";
+    no.onclick = async () => {
+      try { await api("POST", `/ui/api/pair-requests/${r.id}/reject`); } catch (e) { log(e.message, true); }
+    };
+    row.append(code, info, num, ok, no);
+    box.append(row);
+  }
+}
 
 // ---------- Живые обновления ----------
 function connect() {
@@ -177,12 +209,9 @@ function connect() {
   };
   ws.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
-    if (m.kind === "state") { state = m; render(); }
+    if (m.kind === "state") { state = m; render(); renderRequests(); }
     else if (m.kind === "result") {
       log(`Ноутбук ${m.number}: ${m.ok ? "выполнено" : "ошибка"}${m.message ? " — " + m.message : ""}`, !m.ok);
-    } else if (m.kind === "paired") {
-      log(`Ноутбук ${m.number} привязан`);
-      if ($("codeNumber").textContent === m.number) closeModal();
     }
   };
 }
