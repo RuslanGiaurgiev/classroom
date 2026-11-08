@@ -106,10 +106,10 @@ class FileReceiver:
             return web.json_response({"status": "done"})
         part, meta_path = self._paths(laptop, sha)
         meta = {"sha256": sha, "size": size, "name": name, "rel_path": rel_path, "folder_key": folder_key}
-        old = json.loads(meta_path.read_text()) if meta_path.exists() else None
+        old = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.exists() else None
         if old is None or old.get("size") != size:
             part.unlink(missing_ok=True)
-        meta_path.write_text(json.dumps(meta, ensure_ascii=False))
+        meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
         offset = part.stat().st_size if part.exists() else 0
         return web.json_response({"status": "upload", "offset": offset})
 
@@ -118,7 +118,7 @@ class FileReceiver:
         part, meta_path = self._paths(laptop, request.match_info["sha"])
         if not meta_path.exists():
             raise web.HTTPNotFound(text="Сначала /api/files/init")
-        meta = json.loads(meta_path.read_text())
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
         current = part.stat().st_size if part.exists() else 0
         try:
             offset = int(request.query.get("offset", "-1"))
@@ -144,7 +144,7 @@ class FileReceiver:
             return web.json_response({"status": "done"})
         if not meta_path.exists() or not part.exists():
             raise web.HTTPNotFound(text="Нет такой загрузки")
-        meta = json.loads(meta_path.read_text())
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
         if part.stat().st_size != meta["size"]:
             return web.json_response({"error": "файл получен не полностью"}, status=422)
         actual = await asyncio.to_thread(sha256_file, part)
