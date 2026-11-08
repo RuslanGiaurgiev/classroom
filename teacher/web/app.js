@@ -117,6 +117,7 @@ function renderLaptops() {
       el("div", { className: "meta" }, l.online ? "на связи" : fmtAgo(l.last_seen)),
       el("div", { className: "meta" }, "Пользователь: " + (l.username || "—")),
       el("div", { className: "meta" }, "Ждут отправки: " + (l.pending_files == null ? "—" : l.pending_files)),
+      el("div", { className: "meta" }, "Агент: " + (l.agent_version ? "версия " + l.agent_version : "—")),
       el("div", { className: "meta" }, "Браузеры: " + (l.browsers && l.browsers.length ? l.browsers.map((b) => BROWSER_NAMES[b] || b).join(", ") : "—")),
       badges,
       el("div", { className: "card-actions" }, unpair));

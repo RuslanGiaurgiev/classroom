@@ -112,11 +112,24 @@
         } else return;
         reload();
       };
+      const ign = el("button", { className: "btn small", textContent: "Игнорировать такие",
+        title: "Больше никогда не принимать такие файлы (например, журналы программ)" });
+      ign.onclick = async () => {
+        const ext = f.name.includes(".") ? "*." + f.name.split(".").pop().toLowerCase() : f.name.toLowerCase();
+        const pattern = prompt("Больше не принимать файлы по шаблону (можно исправить):\n" +
+          "*.dpapi — все файлы с таким расширением; agent-errors.dpapi — только это имя; logs/ — всё из папки logs", ext);
+        if (!pattern) return;
+        try {
+          const r = await api("POST", "/ui/api/ignore", { pattern });
+          log(`Игнорируются файлы «${r.pattern}». Убрано из Неразобранного: ${r.removed}`);
+        } catch (e) { alert(e.message); }
+        reload();
+      };
       uns.append(el("div", { className: "file-row" },
         el("div", { className: "file-info" }, el("b", {}, f.name),
           el("div", { className: "muted small" }, `ноутбук ${f.laptop} · ${fmtTime(f.received_at)} · ${fmtSize(f.size)}` +
             (sameName[f.name] > 1 ? ` · таких файлов: ${sameName[f.name]}` : ""))),
-        studentPicker(f), show, del));
+        studentPicker(f), show, ign, del));
     }
     root.append(uns);
 
@@ -238,7 +251,8 @@
     if (!sec) {
       sec = el("section", { className: "panel", id: "collectSettings" });
       $("settingsExtra").append(sec);
-    } else if (folderDraft) return;  // не мешаем редактированию
+    } else if (folderDraft && JSON.stringify(st.ignore_patterns || []) === sec.dataset.ign) return;  // не мешаем редактированию
+    sec.dataset.ign = JSON.stringify(st.ignore_patterns || []);
     folderDraft = st.watch_folders.map((f) => ({ ...f }));
     const maxMb = el("input", { type: "number", min: 1, max: 4096, value: st.max_file_mb, style: "width:90px" });
     const rootIn = el("input", { type: "text", value: st.projects_root || "", style: "flex:1" });
@@ -273,9 +287,28 @@
       el("p", { className: "muted small" }, "Какие папки на ноутбуках отслеживать (вместе с вложенными папками). Подпапки создаются автоматически."),
       list, el("div", { className: "row" }, addF),
       el("div", { className: "row" }, el("span", {}, "Не отправлять файлы больше"), maxMb, el("span", {}, "МБ")),
+      ignoreList(st),
       el("div", { className: "row" }, el("span", {}, "Папка проектов на Mac:"), rootIn),
       el("p", { className: "muted small" }, "Пусто — Документы/Компьютерный класс."),
       el("div", { className: "row" }, el("div", { className: "spacer" }), save));
+  }
+
+  function ignoreList(st) {
+    const box = el("div", {}, el("div", { className: "row" }, el("b", {}, "Не принимать файлы:"),
+      el("span", { className: "muted small" }, "кроме встроенных правил (журналы, кэш, недокачанные файлы)")));
+    const pats = st.ignore_patterns || [];
+    if (!pats.length) box.append(el("div", { className: "muted small" }, "Своих правил нет. Их добавляет кнопка «Игнорировать такие» в «Неразобранном»."));
+    const chips = el("div", { className: "students" });
+    for (const p of pats) {
+      const rm = el("button", { className: "btn small danger", textContent: "✕", title: "Снова принимать такие файлы" });
+      rm.onclick = async () => {
+        try { await api("PUT", "/ui/api/settings", { ignore_patterns: pats.filter((x) => x !== p) }); log(`Правило «${p}» удалено`); folderDraft = null; }
+        catch (e) { alert(e.message); }
+      };
+      chips.append(el("div", { className: "student" }, el("code", {}, p), rm));
+    }
+    box.append(chips);
+    return box;
   }
 
   function renderDiskSettings() {

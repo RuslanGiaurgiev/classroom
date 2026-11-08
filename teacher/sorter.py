@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 
+from shared.ignore import BUILTIN_PATTERNS, clean_patterns, ignored_by_patterns
 from teacher.inbox import safe_name, unique_path
 from teacher.names import DEFAULT_THRESHOLD, match_students, suggest_alias
 
@@ -74,6 +75,7 @@ class Sorter:
             web.post("/ui/api/files/{id}/reveal", self.handle_reveal),
             web.post("/ui/api/files/{id}/delete", self.handle_delete),
             web.post("/ui/api/files/delete-unsorted-by-name", self.handle_delete_by_name),
+            web.post("/ui/api/ignore", self.handle_ignore),
             web.post("/ui/api/open-folder", self.handle_open_folder),
         ]
 
@@ -321,6 +323,37 @@ class Sorter:
             self.delete_file(r["id"])
         await self.server.broadcast_event({"kind": "projects_changed"})
         return web.json_response({"deleted": len(rows)})
+
+    def purge_ignored_unsorted(self) -> int:
+        """Убрать из «Неразобранного» всё, что подходит под правила игнорирования (при запуске)."""
+        patterns = BUILTIN_PATTERNS + self.server.storage.settings().get("ignore_patterns", [])
+        n = 0
+        for f in self.db.q("SELECT id, rel_path FROM received WHERE status='unsorted'"):
+            if ignored_by_patterns(f["rel_path"], patterns):
+                self.delete_file(f["id"])
+                n += 1
+        if n:
+            log.info("Убрано служебных файлов из «Неразобранного»: %s", n)
+        return n
+
+    async def handle_ignore(self, request: web.Request) -> web.Response:
+        """«Игнорировать такие файлы»: добавить шаблон и убрать уже пришедшие копии в Корзину."""
+        pattern = clean_patterns([(await request.json()).get("pattern", "")])
+        if not pattern:
+            return web.json_response({"error": "Некорректный шаблон. Пример: *.dpapi или logs/"}, status=400)
+        st = self.server.storage.settings()
+        patterns = clean_patterns(st.get("ignore_patterns", []) + pattern)
+        self.server.storage.update_settings(ignore_patterns=patterns)
+        removed = 0
+        for f in self.db.q("SELECT id, rel_path FROM received WHERE status='unsorted'"):
+            if ignored_by_patterns(f["rel_path"], pattern):
+                self.delete_file(f["id"])
+                removed += 1
+        for handler in self.server.on_settings_changed:   # отправить правило на ноутбуки
+            await handler({"ignore_patterns": patterns})
+        await self.server.broadcast_state()
+        await self.server.broadcast_event({"kind": "projects_changed"})
+        return web.json_response({"pattern": pattern[0], "removed": removed})
 
     async def handle_reveal(self, request: web.Request) -> web.Response:
         """Показать файл в Finder."""

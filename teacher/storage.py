@@ -45,6 +45,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # Яндекс Диск: корневая папка школы и ClientID приложения (токен — в Связке ключей)
     "disk_root": "Компьютерный класс",
     "disk_client_id": "",
+    # Файлы, которые учитель велел игнорировать («*.dpapi», «logs/»)
+    "ignore_patterns": [],
 }
 
 

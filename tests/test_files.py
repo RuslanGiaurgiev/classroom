@@ -92,7 +92,7 @@ def test_ledger_duplicates_and_baseline(tmp_path):
 def test_config_from_teacher_is_sanitized():
     cfg = validate_config({"folders": [{"base": "desktop", "sub": "..\\..\\Windows"}, {"base": "C:", "sub": ""},
                                        {"base": "documents", "sub": "Scratch\\Проекты"}], "max_file_mb": 10**9})
-    assert cfg == {"folders": [{"base": "documents", "sub": "Scratch/Проекты"}], "max_file_mb": 500}
+    assert cfg == {"folders": [{"base": "documents", "sub": "Scratch/Проекты"}], "max_file_mb": 500, "ignore": []}
 
 
 # ---------- Сквозные проверки ----------

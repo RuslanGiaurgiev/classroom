@@ -26,6 +26,8 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 
+from shared.ignore import BUILTIN_PATTERNS, ignored_by_patterns
+
 if TYPE_CHECKING:
     from teacher.server import TeacherServer
 
@@ -103,6 +105,13 @@ class FileReceiver:
         if not 0 < size <= MAX_FILE:
             raise web.HTTPBadRequest(text="Некорректный размер")
         if self.server.db.find_received(laptop, sha):
+            return web.json_response({"status": "done"})
+        hit = ignored_by_patterns(rel_path, BUILTIN_PATTERNS + self.server.storage.settings().get("ignore_patterns", []))
+        if hit:
+            # Служебный файл (например, журнал программы). Не сохраняем. Отвечаем «готово»,
+            # чтобы старый агент перестал его присылать. С ноутбука такой файл НЕ удаляется:
+            # «Конец урока» удаляет только то, что учитель действительно сохранил.
+            log.info("Ноутбук %s: пропущен служебный файл %s (%s)", laptop, rel_path, hit)
             return web.json_response({"status": "done"})
         part, meta_path = self._paths(laptop, sha)
         meta = {"sha256": sha, "size": size, "name": name, "rel_path": rel_path, "folder_key": folder_key}

@@ -5,29 +5,13 @@
 
 from __future__ import annotations
 
-import fnmatch
 import hashlib
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-# Временные и служебные файлы — никогда не отправляем
-IGNORE_PATTERNS = [
-    "*.crdownload",   # Chrome, Яндекс, Edge: файл ещё скачивается
-    "*.part", "*.partial", "*.download", "*.opdownload",
-    "*.tmp", "~$*",   # временные файлы Office и программ
-    "desktop.ini", "thumbs.db", ".ds_store",
-    # Рабочие файлы программ (журналы, блокировки, базы) — это не проекты учеников
-    "*.log", "*.dpapi", "*.lock", "*.lck", "*-journal", "*.wal", "*.shm", "*.ldb", "*.etl",
-    "*.pid", "*.dmp",
-]
-
-# Служебные папки программ: всё внутри них не отправляем
-IGNORE_DIRS = {
-    "logs", "log", "cache", "caches", "temp", "tmp", "crashpad", "crash reports", "gpucache",
-    "code cache", "node_modules", "__pycache__", ".git",
-}
+from shared.ignore import BUILTIN_PATTERNS, ignored_by_patterns
 
 NOISY_VERSIONS = 3          # столько версий одного файла за NOISY_WINDOW секунд → файл «шумный»
 NOISY_WINDOW = 600.0
@@ -37,17 +21,13 @@ STABLE_SECONDS = 3.0      # размер не меняется столько с
 HASH_CHUNK = 1024 * 1024
 
 
-def is_ignored_name(name: str) -> bool:
-    low = name.lower()
-    return any(fnmatch.fnmatchcase(low, p) for p in IGNORE_PATTERNS)
-
-
-def should_ignore(rel_path: Path, size: int, max_bytes: int, is_hidden: Callable[[Path], bool], full_path: Path) -> str | None:
-    """Причина игнорирования или None, если файл надо отправить."""
-    if is_ignored_name(rel_path.name):
-        return "временный/служебный файл"
-    if any(part.lower() in IGNORE_DIRS for part in rel_path.parts[:-1]):
-        return "служебная папка программы"
+def should_ignore(rel_path: Path, size: int, max_bytes: int, is_hidden: Callable[[Path], bool], full_path: Path,
+                  extra_patterns: list[str] | None = None) -> str | None:
+    """Причина игнорирования или None, если файл надо отправить.
+    extra_patterns — шаблоны, добавленные учителем («Игнорировать такие файлы»)."""
+    hit = ignored_by_patterns(rel_path.as_posix(), BUILTIN_PATTERNS + (extra_patterns or []))
+    if hit:
+        return f"служебный файл ({hit})"
     if any(part.startswith(".") for part in rel_path.parts):
         return "скрытый файл"
     if is_hidden(full_path):

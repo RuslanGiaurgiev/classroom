@@ -40,6 +40,7 @@ from shared.protocol import (
     validate_command,
     validate_process_name,
 )
+from shared.ignore import clean_patterns
 from shared.search import SEARCH_ENGINES, to_url
 from teacher.db import DB
 from teacher.endlesson import EndLesson
@@ -142,6 +143,7 @@ class TeacherServer:
         await site.start()
         self.port = self._runner.addresses[0][1]
         log.info("Сервер запущен на %s:%s", host, self.port)
+        self.sorter.purge_ignored_unsorted()
         self.disk.start()
         if udp_discovery:
             # Отвечаем на широковещательный поиск на том же номере порта (UDP)
@@ -428,7 +430,7 @@ class TeacherServer:
     def public_settings(self) -> dict[str, Any]:
         st = self.storage.settings()
         keys = ("search_engine", "apps", "lesson_sets", "watch_folders", "max_file_mb", "active_group",
-                "name_threshold", "disk_root", "disk_client_id")
+                "name_threshold", "disk_root", "disk_client_id", "ignore_patterns")
         return {k: st.get(k) for k in keys} | {
             "search_engines": {k: v[0] for k, v in SEARCH_ENGINES.items()},
             "projects_root": str(self.projects_root()),
@@ -499,6 +501,8 @@ class TeacherServer:
             if not folders:
                 raise ValueError("Нужна хотя бы одна папка")
             out["watch_folders"] = folders
+        if "ignore_patterns" in body:
+            out["ignore_patterns"] = clean_patterns(body["ignore_patterns"])
         if "max_file_mb" in body:
             mb = body["max_file_mb"]
             if not isinstance(mb, int) or not 1 <= mb <= 4096:
@@ -540,7 +544,7 @@ class TeacherServer:
 
     def collect_config(self) -> dict:
         st = self.storage.settings()
-        return {"folders": st["watch_folders"], "max_file_mb": st["max_file_mb"]}
+        return {"folders": st["watch_folders"], "max_file_mb": st["max_file_mb"], "ignore": st.get("ignore_patterns", [])}
 
     async def _send_config(self, conn: AgentConn) -> None:
         try:
@@ -549,7 +553,7 @@ class TeacherServer:
             pass
 
     async def _config_changed(self, updates: dict) -> None:
-        if "watch_folders" in updates or "max_file_mb" in updates:
+        if {"watch_folders", "max_file_mb", "ignore_patterns"} & set(updates):
             for conn in list(self.agents.values()):
                 await self._send_config(conn)
 

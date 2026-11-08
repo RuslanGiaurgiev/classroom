@@ -34,6 +34,7 @@ from agent.files import (
 )
 from agent.ledger import FileRow, Ledger
 from agent.platform.base import Platform
+from shared.ignore import clean_patterns
 
 if TYPE_CHECKING:
     from agent.client import AgentClient
@@ -43,6 +44,7 @@ log = logging.getLogger(__name__)
 DEFAULT_CONFIG = {
     "folders": [{"base": "downloads", "sub": ""}, {"base": "desktop", "sub": "Проекты"}],
     "max_file_mb": 500,
+    "ignore": [],
 }
 FOLDER_BASES = ("downloads", "desktop", "documents")
 CHUNK = 4 * 1024 * 1024          # размер куска при отправке
@@ -70,7 +72,8 @@ def validate_config(config: dict) -> dict:
     max_mb = config.get("max_file_mb", DEFAULT_CONFIG["max_file_mb"])
     if not isinstance(max_mb, int) or not 1 <= max_mb <= 4096:
         max_mb = DEFAULT_CONFIG["max_file_mb"]
-    return {"folders": folders or DEFAULT_CONFIG["folders"], "max_file_mb": max_mb}
+    return {"folders": folders or DEFAULT_CONFIG["folders"], "max_file_mb": max_mb,
+            "ignore": clean_patterns(config.get("ignore", []))}
 
 
 class Collector:
@@ -214,7 +217,7 @@ class Collector:
             self.tracker.forget(path)
             return
         key, rel = loc
-        if not path.is_file() or should_ignore(rel, st.st_size, self.max_bytes, self.platform.is_hidden, path):
+        if not path.is_file() or should_ignore(rel, st.st_size, self.max_bytes, self.platform.is_hidden, path, self.config["ignore"]):
             return
         if not self.ledger.is_known(key, rel.as_posix(), st.st_size, st.st_mtime_ns):
             self.tracker.observe(path, st.st_size, st.st_mtime_ns)
@@ -249,7 +252,7 @@ class Collector:
                     except OSError:
                         continue
                     rel = full.relative_to(root)
-                    if should_ignore(rel, st.st_size, self.max_bytes, self.platform.is_hidden, full):
+                    if should_ignore(rel, st.st_size, self.max_bytes, self.platform.is_hidden, full, self.config["ignore"]):
                         continue
                     yield key, root, rel, st
 
@@ -377,7 +380,7 @@ class Collector:
             self.ledger.set_status(row.id, "gone", "файл удалён до отправки")
             log.warning("Файл %s/%s пропал до отправки", row.folder_key, row.rel_path)
             return False
-        reason = should_ignore(Path(row.rel_path), st.st_size, self.max_bytes, self.platform.is_hidden, path)
+        reason = should_ignore(Path(row.rel_path), st.st_size, self.max_bytes, self.platform.is_hidden, path, self.config["ignore"])
         if reason:
             # Правила игнорирования могли измениться (новая версия агента) — не отправляем
             self.ledger.set_status(row.id, "ignored", reason)
