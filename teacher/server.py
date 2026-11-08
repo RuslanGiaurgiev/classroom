@@ -42,6 +42,7 @@ from shared.protocol import (
 )
 from shared.search import SEARCH_ENGINES, to_url
 from teacher.db import DB
+from teacher.endlesson import EndLesson
 from teacher.inbox import FileReceiver
 from teacher.sorter import Sorter
 from teacher.yadisk import YandexDisk
@@ -98,9 +99,11 @@ class TeacherServer:
         self.on_agent_connected: list = []
         self.on_agent_report: list = []
         self.on_settings_changed: list = []
+        self._waiting: dict[tuple[str, str], asyncio.Future] = {}   # (command_id, ноутбук) → ожидание результата
         self.db = DB(storage.data_dir / "teacher.sqlite3")
         self.files = FileReceiver(self)
         self.sorter = Sorter(self)
+        self.end_lesson = EndLesson(self)
         self.disk = YandexDisk(self, token_store=disk_token_store, **({"api_base": disk_api_base} if disk_api_base else {}))
         self.on_agent_connected.append(self._send_config)
         self.on_settings_changed.append(self._config_changed)
@@ -126,6 +129,7 @@ class TeacherServer:
         app.add_routes(self.files.routes())
         app.add_routes(self.sorter.routes())
         app.add_routes(self.disk.routes())
+        app.add_routes(self.end_lesson.routes())
         app.router.add_static("/ui/static/", WEB_DIR)
         return app
 
@@ -313,6 +317,10 @@ class TeacherServer:
                 await handler(conn, msg.payload)
         elif msg.type == MsgType.RESULT:
             p = msg.payload
+            fut = self._waiting.pop((str(p.get("command_id", "")), conn.number), None)
+            if fut is not None and not fut.done():
+                fut.set_result(p)
+                return  # результат ждёт сценарий (например, «Конец урока») — он сам напишет в журнал
             await self.broadcast_event({
                 "kind": "result",
                 "number": conn.number,
@@ -320,6 +328,27 @@ class TeacherServer:
                 "ok": bool(p.get("ok")),
                 "message": str(p.get("message", ""))[:500],
             })
+
+    async def command_and_wait(self, number: str, action: Action, params: dict, timeout: float) -> dict | None:
+        """
+        Отправить команду одному ноутбуку и дождаться результата.
+        None — ноутбук не на связи или не ответил за timeout секунд.
+        """
+        conn = self.agents.get(number)
+        if conn is None:
+            return None
+        act, params = validate_command(action.value, params)
+        command_id = uuid.uuid4().hex
+        fut = asyncio.get_running_loop().create_future()
+        self._waiting[(command_id, number)] = fut
+        try:
+            await conn.ws.send_str(Message(MsgType.COMMAND, {"command_id": command_id, "action": act.value,
+                                                             "params": params}).to_json())
+            return await asyncio.wait_for(fut, timeout)
+        except (asyncio.TimeoutError, ConnectionError):
+            return None
+        finally:
+            self._waiting.pop((command_id, number), None)
 
     async def send_command(self, targets: list[str] | str, action: str, params: dict[str, Any]) -> dict[str, Any]:
         """

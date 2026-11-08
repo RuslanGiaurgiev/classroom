@@ -271,3 +271,72 @@ def test_trash_kept_7_days(tmp_path):
         (col.trash_dir() / name).mkdir(parents=True)
     col.purge_trash()
     assert sorted(p.name for p in col.trash_dir().iterdir()) == ["2999-01-01", "не дата"]
+
+
+# ---------- «Конец урока» целиком ----------
+
+async def test_end_lesson_full_flow(teacher, tmp_path):
+    from tests.test_integration import ui
+    p1, core1 = make_core(tmp_path, "1")
+    p2, core2 = make_core(tmp_path, "2")
+    write(p1.known_folder("downloads") / "старьё.pdf", b"old")        # до установки — не трогаем
+    _, c1, t1 = await start_agent(teacher, tmp_path, "1", core=core1, platform=p1)
+    _, c2, t2 = await start_agent(teacher, tmp_path, "2", core=core2, platform=p2)
+
+    d1 = p1.known_folder("desktop") / "Проекты"
+    write(d1 / "кот.sb3", b"cat")
+    write(d1 / "пёс.sb3", b"dog")                    # появился прямо перед концом урока
+    d2 = p2.known_folder("downloads")
+    big = d2 / "ещё качается.zip.crdownload"          # скачивается — игнорируется, не удаляется
+    write(big, b"partial")
+
+    status, _ = await ui(teacher, "POST", "/ui/api/end-lesson", json={"targets": "all"})
+    assert status == 200
+    await asyncio.sleep(0.1)
+    await wait_for(lambda: not teacher.end_lesson.running, timeout=30)
+    prog = teacher.end_lesson.progress
+    assert prog["1"]["stage"] == "done" and "убрано в корзину 2" in prog["1"]["text"]
+    assert prog["2"]["stage"] == "done"
+    # Всё получено учителем
+    assert sorted(r["name"] for r in teacher.db.q("SELECT name FROM received")) == ["кот.sb3", "пёс.sb3"]
+    # На ноутбуке осталось только «старое» и недокачанное
+    assert sorted(p.name for p in p1.known_folder("downloads").rglob("*") if p.is_file()) == ["старьё.pdf"]
+    assert not any(d1.iterdir())
+    assert big.exists()
+    await stop_agent(c1, t1)
+    await stop_agent(c2, t2)
+
+
+async def test_end_lesson_skips_cleanup_if_not_everything_sent(teacher, tmp_path):
+    """Если хоть один файл не подтверждён — на этом ноутбуке ничего не удаляется."""
+    platform, core = make_core(tmp_path, "3")
+    _, client, task = await start_agent(teacher, tmp_path, "3", core=core, platform=platform)
+    d = platform.known_folder("downloads")
+    write(d / "отправлен.sb3", b"ok")
+    await wait_for(lambda: teacher.db.q("SELECT 1 FROM received"), timeout=10)
+
+    # Сеть «пропала» при отправке: новый файл не сможет уйти учителю
+    import teacher.endlesson as el
+    old_attempts = el.ATTEMPTS
+    el.ATTEMPTS = 1
+
+    async def fail_upload(session, base, row):
+        raise aiohttp.ClientConnectionError("сеть пропала")
+    core.collector._upload_one = fail_upload
+    write(d / "не отправлен.sb3", b"no")
+    try:
+        await teacher.end_lesson.run(["3"])
+    finally:
+        el.ATTEMPTS = old_attempts
+    assert teacher.end_lesson.progress["3"]["stage"] == "warning"
+    assert (d / "отправлен.sb3").exists() and (d / "не отправлен.sb3").exists()   # ничего не удалено
+    await stop_agent(client, task)
+
+
+async def test_end_lesson_offline_laptop(teacher, tmp_path):
+    platform, core = make_core(tmp_path, "4")
+    _, client, task = await start_agent(teacher, tmp_path, "4", core=core, platform=platform)
+    await stop_agent(client, task)
+    await wait_for(lambda: "4" not in teacher.agents)
+    await teacher.end_lesson.run(["4"])
+    assert teacher.end_lesson.progress["4"]["stage"] == "skip"
