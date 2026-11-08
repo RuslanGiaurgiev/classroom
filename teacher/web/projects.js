@@ -1,33 +1,69 @@
-// Вкладка «Проекты» (неразобранное, группы и ученики, Яндекс Диск),
-// настройки сбора и Диска, окно «Конец урока».
+// Экран «Работы»: группы → ученики → их работы, разбор «Неразобранного»,
+// выбор текущей группы на экране «Класс» и окно «Конец урока».
 "use strict";
 (function () {
   const { api, el, $ } = App;
-  // Уведомления и окна в стиле приложения (вместо системных alert/confirm/prompt)
-  const note = (text, isError) => App.toast(text, isError ? "error" : "ok");
-  const ask = (text, opts) => App.confirm(text, opts);
-  const askText = (text, value) => {
-    const [title, ...rest] = text.split("\n");
-    return App.prompt(title, value, { label: rest.join(" ") });
-  };
-  let proj = { groups: [], unsorted: [], recent: [], active_group: null, root: "" };
-  let disk = { has_token: false, state: "", counts: {}, items: [] };
+  const ok = (t) => App.toast(t, "ok");
+  const fail = (t) => App.toast(t, "error");
+  const COLORS = ["var(--teal)", "var(--orange)", "var(--purple)", "var(--blue)", "var(--red)", "var(--mint)"];
 
-  // ---------- Загрузка данных (с задержкой, чтобы не дёргать сервер на каждое событие) ----------
-  let reloadTimer = null;
-  function reload() {
-    clearTimeout(reloadTimer);
-    reloadTimer = setTimeout(async () => {
-      try {
-        [proj, disk] = await Promise.all([api("GET", "/ui/api/projects"), api("GET", "/ui/api/disk")]);
-        renderProjects();
-        renderDiskSettings();
-      } catch (e) { console.error(e); }
-    }, 250);
-  }
+  let proj = { groups: [], unsorted: [], recent: [], active_group: null, root: "" };
+  let disk = { counts: {}, state: "", has_token: false };
+  // Что открыто справа: {mode: "group"|"student"|"unsorted"|"recent", groupId, studentId}
+  let view = { mode: "group", groupId: null, studentId: null };
 
   const fmtSize = (b) => (b > 1048576 ? (b / 1048576).toFixed(1) + " МБ" : Math.max(1, Math.round(b / 1024)) + " КБ");
   const fmtTime = (ts) => new Date(ts * 1000).toLocaleString("ru-RU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  const fmtDate = (d) => new Date(d + "T12:00").toLocaleDateString("ru-RU", { day: "numeric", month: "long" });
+  const ext = (n) => (n.includes(".") ? n.split(".").pop().toLowerCase() : "");
+  const ICON = { sb3: "🐱", sb2: "🐱", py: "🐍", png: "🖼️", jpg: "🖼️", jpeg: "🖼️", gif: "🖼️", pptx: "📊", ppt: "📊", docx: "📄", doc: "📄",
+    pdf: "📕", mp4: "🎬", mov: "🎬", mp3: "🎵", wav: "🎵", zip: "🗜️", html: "🌐", txt: "📝", stl: "🧊", blend: "🧊" };
+  const icon = (n) => ICON[ext(n)] || "📄";
+  const plural = (n, one, few, many) => {
+    const m10 = n % 10, m100 = n % 100;
+    return m10 === 1 && m100 !== 11 ? one : m10 >= 2 && m10 <= 4 && (m100 < 10 || m100 >= 20) ? few : many;
+  };
+
+  // ---------- Данные ----------
+  let timer = null;
+  function reload() {
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      try {
+        [proj, disk] = await Promise.all([api("GET", "/ui/api/projects"), api("GET", "/ui/api/disk")]);
+        App.proj = proj;
+        App.disk = disk;
+        if (view.groupId == null || !proj.groups.some((g) => g.id === view.groupId)) view.groupId = proj.active_group || (proj.groups[0] || {}).id || null;
+        render();
+        renderGroupSelect();
+        if (App.onProjects) App.onProjects();
+      } catch (e) { console.error(e); }
+    }, 200);
+  }
+  App.reloadProjects = reload;
+
+  // ---------- «Сейчас занимается» на экране «Класс» ----------
+  function renderGroupSelect() {
+    const sel = $("groupSelect");
+    sel.innerHTML = "";
+    sel.append(el("option", { value: "" }, proj.groups.length ? "— выберите группу —" : "сначала создайте группу в «Работах»"));
+    for (const g of proj.groups) sel.append(el("option", { value: g.id }, `${g.name} (${g.students.length})`));
+    sel.value = proj.active_group || "";
+  }
+  async function setActiveGroup(id) {
+    try {
+      await api("PUT", "/ui/api/settings", { active_group: id ? Number(id) : null });
+      const g = proj.groups.find((x) => x.id === Number(id));
+      ok(g ? `Сейчас занимается «${g.name}» — работы будут раскладываться по её ученикам` : "Группа не выбрана");
+    } catch (e) { fail(e.message); }
+    reload();
+  }
+  $("groupSelect").onchange = (e) => setActiveGroup(e.target.value);
+
+  // ---------- Действия с работами ----------
+  const reveal = (id) => api("POST", `/ui/api/files/${id}/reveal`).catch((e) => fail(e.message));
+  const openFile = (id) => api("POST", `/ui/api/files/${id}/open`).catch((e) => fail(e.message));
+  const openFolder = (which) => api("POST", "/ui/api/open-folder", { which }).catch((e) => fail(e.message));
 
   function allStudents() {
     const out = [];
@@ -35,402 +71,336 @@
     return out;
   }
 
-  // ---------- Назначить файл ученику ----------
   async function assign(file, studentId) {
     try {
       const r = await api("POST", `/ui/api/files/${file.id}/assign`, { student_id: studentId });
-      note(`«${file.name}» → ${r.student}`);
+      ok(`«${file.name}» → ${r.student}`);
       if (r.suggest_alias) {
-        const alias = await askText(`Запомнить написание «${r.suggest_alias}» как вариант имени «${r.student}»?\n` +
-          "Тогда такие файлы будут разбираться сами. Можно исправить слово:", r.suggest_alias);
-        if (alias && alias.trim()) {
+        const alias = await App.prompt(`Запомнить «${r.suggest_alias}»?`, r.suggest_alias,
+          { label: `Тогда файлы с этим словом будут сами попадать к ученику «${r.student}». Можно исправить слово:`, okText: "Запомнить" });
+        if (alias) {
           const st = allStudents().find((s) => s.id === studentId);
-          await api("PUT", `/ui/api/students/${studentId}`, { aliases: [...(st ? st.aliases : []), alias.trim()] });
-          note(`Запомнено: «${alias.trim()}» — это ${r.student}`);
+          await api("PUT", `/ui/api/students/${studentId}`, { aliases: [...(st ? st.aliases : []), alias] });
+          ok(`Запомнено: «${alias}» — это ${r.student}`);
         }
       }
-    } catch (e) { note(e.message, true); }
+    } catch (e) { fail(e.message); }
     reload();
   }
 
-  function studentPicker(file) {
-    const box = el("div", { className: "assign" });
-    const active = proj.groups.find((g) => g.id === proj.active_group);
-    const list = active ? active.students.map((s) => ({ ...s, group: active.name })) : allStudents();
-    if (active && list.length && list.length <= 24) {
-      // Один клик — кнопки с именами учеников текущей группы
-      for (const s of list) {
-        const b = el("button", { className: "btn small chip", textContent: s.name });
-        b.onclick = () => assign(file, s.id);
-        box.append(b);
+  // Окно выбора ученика (для «Другому ученику» и «Выбрать ученика»)
+  function pickStudent(title) {
+    return new Promise((resolve) => {
+      const list = el("div", {});
+      const groups = proj.groups.filter((g) => g.students.length);
+      if (!groups.length) list.append(el("p", { className: "muted" }, "Учеников пока нет. Добавьте их в разделе «Работы»."));
+      for (const g of groups) {
+        const row = el("div", { className: "assign", style: "margin-bottom:12px" });
+        for (const s of g.students) {
+          const b = el("button", { className: "btn ghost small", textContent: s.name });
+          b.onclick = () => { b.closest(".modal")._close("picked"); resolve(s.id); };
+          row.append(b);
+        }
+        list.append(el("div", { className: "eyebrow", style: "margin:6px 0" }, g.name), row);
       }
-    } else if (list.length) {
-      const sel = el("select", {}, el("option", { value: "" }, "— выберите ученика —"));
-      for (const s of list) sel.append(el("option", { value: s.id }, `${s.name} (${s.group})`));
-      sel.onchange = () => { if (sel.value) assign(file, Number(sel.value)); };
-      box.append(sel);
-    } else {
-      box.append(el("span", { className: "muted small" }, "Сначала добавьте учеников ниже"));
-    }
-    return box;
+      App.dialog({ title, body: [list], buttons: [{ text: "Отмена", value: null }] }).then((v) => { if (v !== "picked") resolve(null); });
+    });
   }
 
-  const reveal = (id) => api("POST", `/ui/api/files/${id}/reveal`).catch((e) => note(e.message, true));
-  const openFolder = (which) => api("POST", "/ui/api/open-folder", { which }).catch((e) => note(e.message, true));
-
-  // ---------- Отрисовка вкладки ----------
-  function renderProjects() {
+  // ---------- Отрисовка ----------
+  function render() {
     const root = $("projectsRoot");
     root.innerHTML = "";
     const badge = $("unsortedBadge");
     badge.hidden = !proj.unsorted.length;
     badge.textContent = proj.unsorted.length;
 
-    // Папки
-    const folders = el("section", { className: "panel" },
-      el("h2", {}, "Папка проектов на Mac"),
-      el("div", { className: "row" }, el("code", {}, proj.root), el("div", { className: "spacer" }),
-        ...[["projects", "Проекты"], ["unsorted", "Неразобранное"], ["inbox", "Входящие"]].map(([w, t]) => {
-          const b = el("button", { className: "btn small", textContent: "Открыть «" + t + "»" });
-          b.onclick = () => openFolder(w);
-          return b;
-        })));
-    root.append(folders);
-
-    // Неразобранное
-    const uns = el("section", { className: "panel" + (proj.unsorted.length ? " attention" : "") },
-      el("h2", {}, `Неразобранное (${proj.unsorted.length})`));
-    if (!proj.unsorted.length) uns.append(el("p", { className: "muted" }, "Всё разобрано 👍"));
-    else uns.append(el("p", { className: "muted small" },
-      "Эти файлы не удалось отнести к ученику (имя не найдено или подходит нескольким). Нажмите на имя ученика."));
-    const sameName = {};
-    for (const f of proj.unsorted) sameName[f.name] = (sameName[f.name] || 0) + 1;
-    for (const f of proj.unsorted) {
-      const show = el("button", { className: "btn small", textContent: "Показать", title: "Показать в Finder" });
-      show.onclick = () => reveal(f.id);
-      const del = el("button", { className: "btn small danger", textContent: "Удалить", title: "Это мусор — убрать в Корзину Mac" });
-      del.onclick = async () => {
-        if (sameName[f.name] > 1 && await ask(`Удалить ВСЕ файлы «${f.name}» из Неразобранного (${sameName[f.name]} шт.)?\nОни уйдут в Корзину Mac.`)) {
-          const r = await api("POST", "/ui/api/files/delete-unsorted-by-name", { name: f.name });
-          note(`Удалено в Корзину: ${r.deleted} × «${f.name}»`);
-        } else if (sameName[f.name] === 1 && await ask(`Удалить «${f.name}»? Файл уйдёт в Корзину Mac.`)) {
-          await api("POST", `/ui/api/files/${f.id}/delete`);
-          note(`«${f.name}» удалён в Корзину`);
-        } else return;
-        reload();
-      };
-      const ign = el("button", { className: "btn small", textContent: "Игнорировать такие",
-        title: "Больше никогда не принимать такие файлы (например, журналы программ)" });
-      ign.onclick = async () => {
-        const ext = f.name.includes(".") ? "*." + f.name.split(".").pop().toLowerCase() : f.name.toLowerCase();
-        const pattern = await askText("Больше не принимать файлы по шаблону (можно исправить):\n" +
-          "*.dpapi — все файлы с таким расширением; agent-errors.dpapi — только это имя; logs/ — всё из папки logs", ext);
-        if (!pattern) return;
-        try {
-          const r = await api("POST", "/ui/api/ignore", { pattern });
-          note(`Игнорируются файлы «${r.pattern}». Убрано из Неразобранного: ${r.removed}`);
-        } catch (e) { note(e.message, true); }
-        reload();
-      };
-      uns.append(el("div", { className: "file-row" },
-        el("div", { className: "file-info" }, el("b", {}, f.name),
-          el("div", { className: "muted small" }, `ноутбук ${f.laptop} · ${fmtTime(f.received_at)} · ${fmtSize(f.size)}` +
-            (sameName[f.name] > 1 ? ` · таких файлов: ${sameName[f.name]}` : ""))),
-        studentPicker(f), show, ign, del));
+    if (proj.unsorted.length && view.mode !== "unsorted") {
+      const go = el("button", { className: "btn ghost big", textContent: "Разобрать" });
+      go.onclick = () => { view.mode = "unsorted"; render(); };
+      root.append(el("div", { className: "banner" }, el("div", { className: "ico" }, "📥"),
+        el("div", {}, el("h2", {}, `${proj.unsorted.length} ${plural(proj.unsorted.length, "работа ждёт", "работы ждут", "работ ждут")} разбора`),
+          el("div", {}, "Не удалось понять, чьи это работы. Нажмите «Разобрать» и укажите ученика.")),
+        el("div", { className: "spacer" }), go));
     }
-    root.append(uns);
-
-    // Группы и ученики
-    root.append(renderGroups());
-
-    // Яндекс Диск — кратко
-    const c = disk.counts || {};
-    const stateText = {
-      no_token: "не подключён (см. «Настройки»)", auth_error: "ошибка токена — получите новый в «Настройках»",
-      offline: "нет интернета — файлы ждут в очереди", working: "выгружаю…", idle: "работает",
-    }[disk.state] || disk.state;
-    const retry = el("button", { className: "btn small", textContent: "Повторить сейчас" });
-    retry.onclick = () => api("POST", "/ui/api/disk/retry").then(reload);
-    const dsk = el("section", { className: "panel" }, el("h2", {}, "Яндекс Диск"),
-      el("div", { className: "row" }, el("span", {}, "Состояние: " + stateText),
-        el("span", { className: "muted" }, ` · выгружено ${c.done || 0}, в очереди ${c.pending || 0}`),
-        el("div", { className: "spacer" }), retry));
-    const failed = (disk.items || []).filter((i) => i.status !== "done" && i.last_error);
-    for (const i of failed.slice(0, 20)) {
-      dsk.append(el("div", { className: "muted small" }, `${i.remote_path}: ${i.last_error} (попыток ${i.attempts})`));
-    }
-    root.append(dsk);
-
-    // Последние полученные
-    const rec = el("section", { className: "panel" }, el("h2", {}, "Последние полученные файлы"));
-    if (!proj.recent.length) rec.append(el("p", { className: "muted" }, "Пока ничего не получено."));
-    for (const f of proj.recent.slice(0, 50)) {
-      const where = f.status === "sorted" ? `${f.group_name} / ${f.student}` : f.status === "unsorted" ? "Неразобранное" : "…";
-      const row = el("div", { className: "file-row small" },
-        el("span", { className: "muted" }, fmtTime(f.received_at)), el("span", {}, `ноут ${f.laptop}`),
-        el("b", { className: "file-info" }, f.name), el("span", {}, "→ " + where));
-      row.ondblclick = () => reveal(f.id);
-      row.title = "Двойной щелчок — показать в Finder";
-      rec.append(row);
-    }
-    root.append(rec);
+    const layout = el("div", { className: "proj-layout" });
+    layout.append(renderSide(), renderMain());
+    root.append(layout);
   }
 
-  function renderGroups() {
-    const sec = el("section", { className: "panel" }, el("h2", {}, "Группы и ученики"));
-    // Текущая группа
-    const sel = el("select", {}, el("option", { value: "" }, "все группы"));
-    for (const g of proj.groups) sel.append(el("option", { value: g.id }, g.name));
-    sel.value = proj.active_group || "";
-    sel.onchange = async () => {
-      try { await api("PUT", "/ui/api/settings", { active_group: sel.value ? Number(sel.value) : null }); note("Текущая группа сохранена"); }
-      catch (e) { note(e.message, true); }
-      reload();
-    };
-    sec.append(el("div", { className: "row" }, el("b", {}, "Сейчас занимается:"), sel,
-      el("span", { className: "muted small" }, "файлы сортируются только по ученикам этой группы")));
-
+  function renderSide() {
+    const side = el("aside", { className: "side-list" }, el("div", { className: "eyebrow" }, "Группы"));
     for (const g of proj.groups) {
-      const box = el("div", { className: "group" + (g.id === proj.active_group ? " active" : "") });
-      const ren = el("button", { className: "btn small", textContent: "Переименовать" });
-      ren.onclick = async () => {
-        const name = await askText("Новое название группы:", g.name);
-        if (name) { try { await api("PUT", `/ui/api/groups/${g.id}`, { name }); } catch (e) { note(e.message, true); } reload(); }
-      };
-      const del = el("button", { className: "btn small danger", textContent: "Удалить группу" });
-      del.onclick = async () => {
-        if (!await ask(`Удалить группу «${g.name}» и её список учеников? Файлы на диске останутся.`)) return;
-        await api("DELETE", `/ui/api/groups/${g.id}`); reload();
-      };
-      box.append(el("div", { className: "row" }, el("h3", {}, g.name), el("span", { className: "muted small" }, `${g.students.length} уч.`),
-        el("div", { className: "spacer" }), ren, del));
-      const list = el("div", { className: "students" });
-      for (const s of g.students) {
-        const edit = el("button", { className: "btn small", textContent: "✎", title: "Изменить имя и варианты написания" });
-        edit.onclick = async () => {
-          const name = await askText("Имя ученика:", s.name);
-          if (name == null) return;
-          const al = await askText("Варианты написания через запятую (например: Masha, Машуня):", s.aliases.join(", "));
-          if (al == null) return;
-          try { await api("PUT", `/ui/api/students/${s.id}`, { name, aliases: al.split(",").map((x) => x.trim()).filter(Boolean) }); }
-          catch (e) { note(e.message, true); }
-          reload();
-        };
-        const rm = el("button", { className: "btn small danger", textContent: "✕", title: "Удалить ученика" });
-        rm.onclick = async () => { if (await ask(`Удалить ученика «${s.name}»?`)) { await api("DELETE", `/ui/api/students/${s.id}`); reload(); } };
-        list.append(el("div", { className: "student" }, el("b", {}, s.name),
-          s.aliases.length ? el("span", { className: "muted small" }, " (" + s.aliases.join(", ") + ")") : null, edit, rm));
-      }
-      box.append(list);
-      const ta = el("textarea", { rows: 2, placeholder: "Добавить учеников: по одному в строке. Варианты написания — через запятую:\nМаша, Masha, Машуня\nСаша, Sasha, Александр" });
-      const add = el("button", { className: "btn small primary", textContent: "Добавить" });
-      add.onclick = async () => {
-        if (!ta.value.trim()) return;
-        try {
-          const r = await api("POST", "/ui/api/students/bulk", { group_id: g.id, text: ta.value });
-          note(`Добавлено учеников: ${r.added}`);
-          if (r.errors.length) note(r.errors.join("; "), true);
-        } catch (e) { note(e.message, true); }
-        reload();
-      };
-      box.append(el("div", { className: "row" }, ta, add));
-      sec.append(box);
+      const active = (view.mode === "group" || view.mode === "student") && view.groupId === g.id;
+      const b = el("button", { className: "side-item" + (active ? " active" : "") + (g.id === proj.active_group ? " now" : "") },
+        el("b", {}, g.name), el("span", { className: "cnt" }, String(g.students.length)));
+      b.onclick = () => { view = { mode: "group", groupId: g.id, studentId: null }; render(); };
+      side.append(b);
     }
-    const gname = el("input", { type: "text", placeholder: "Название новой группы (например, Пн 10.00)" });
-    const gadd = el("button", { className: "btn primary", textContent: "+ Группа" });
-    gadd.onclick = async () => {
-      if (!gname.value.trim()) return;
-      try { await api("POST", "/ui/api/groups", { name: gname.value }); } catch (e) { note(e.message, true); }
-      reload();
-    };
-    sec.append(el("div", { className: "row" }, gname, gadd));
-    return sec;
-  }
-
-  // ---------- Настройки: сбор файлов и Яндекс Диск ----------
-  const BASES = { downloads: "Загрузки", desktop: "Рабочий стол", documents: "Документы" };
-  let folderDraft = null;
-
-  function renderCollectSettings(state) {
-    const st = state.settings || {};
-    if (!st.watch_folders) return;
-    let sec = $("collectSettings");
-    if (!sec) {
-      sec = el("section", { className: "panel", id: "collectSettings" });
-      $("settingsExtra").append(sec);
-    } else if (folderDraft && JSON.stringify(st.ignore_patterns || []) === sec.dataset.ign) return;  // не мешаем редактированию
-    sec.dataset.ign = JSON.stringify(st.ignore_patterns || []);
-    folderDraft = st.watch_folders.map((f) => ({ ...f }));
-    const maxMb = el("input", { type: "number", min: 1, max: 4096, value: st.max_file_mb, style: "width:90px" });
-    const rootIn = el("input", { type: "text", value: st.projects_root || "", style: "flex:1" });
-    const list = el("div");
-    const draw = () => {
-      list.innerHTML = "";
-      folderDraft.forEach((f, i) => {
-        const base = el("select", {});
-        for (const [k, t] of Object.entries(BASES)) base.append(el("option", { value: k }, t));
-        base.value = f.base;
-        base.onchange = () => (f.base = base.value);
-        const sub = el("input", { type: "text", value: f.sub, placeholder: "(сама папка) или подпапка, например Проекты" });
-        sub.oninput = () => (f.sub = sub.value);
-        const del = el("button", { className: "btn small danger", textContent: "✕" });
-        del.onclick = () => { folderDraft.splice(i, 1); draw(); };
-        list.append(el("div", { className: "row" }, base, el("span", {}, "\\"), sub, del));
-      });
-    };
-    draw();
-    const addF = el("button", { className: "btn small", textContent: "+ Папка" });
-    addF.onclick = () => { folderDraft.push({ base: "desktop", sub: "" }); draw(); };
-    const save = el("button", { className: "btn primary", textContent: "Сохранить" });
-    save.onclick = async () => {
-      try {
-        await api("PUT", "/ui/api/settings", { watch_folders: folderDraft, max_file_mb: Number(maxMb.value), projects_root: rootIn.value });
-        note("Настройки сбора сохранены и отправлены на ноутбуки");
-        folderDraft = null;
-      } catch (e) { note(e.message, true); }
-    };
-    sec.innerHTML = "";
-    sec.append(el("h2", {}, "Сбор проектов"),
-      el("p", { className: "muted small" }, "Какие папки на ноутбуках отслеживать (вместе с вложенными папками). Подпапки создаются автоматически."),
-      list, el("div", { className: "row" }, addF),
-      el("div", { className: "row" }, el("span", {}, "Не отправлять файлы больше"), maxMb, el("span", {}, "МБ")),
-      ignoreList(st),
-      materialsDest(st),
-      el("div", { className: "row" }, el("span", {}, "Папка проектов на Mac:"), rootIn),
-      el("p", { className: "muted small" }, "Пусто — Документы/Компьютерный класс."),
-      el("div", { className: "row" }, el("div", { className: "spacer" }), save));
-  }
-
-  function materialsDest(st) {
-    const d = st.materials_dest || { base: "desktop", sub: "Материалы" };
-    const base = el("select", {});
-    for (const [k, t] of Object.entries(BASES)) base.append(el("option", { value: k }, t));
-    base.value = d.base;
-    const sub = el("input", { type: "text", value: d.sub, placeholder: "например, Материалы" });
-    const save = el("button", { className: "btn small", textContent: "Сохранить" });
-    save.onclick = async () => {
-      try { await api("PUT", "/ui/api/settings", { materials_dest: { base: base.value, sub: sub.value } }); note("Папка материалов сохранена"); folderDraft = null; }
-      catch (e) { note(e.message, true); }
-    };
-    return el("div", {}, el("div", { className: "row" }, el("b", {}, "Материалы урока на ноутбуках:"), base, el("span", {}, "\\"), sub, save),
-      el("p", { className: "muted small" }, "Эта папка не собирается как проекты и не очищается «Концом урока»."));
-  }
-
-  function ignoreList(st) {
-    const box = el("div", {}, el("div", { className: "row" }, el("b", {}, "Не принимать файлы:"),
-      el("span", { className: "muted small" }, "кроме встроенных правил (журналы, кэш, недокачанные файлы)")));
-    const pats = st.ignore_patterns || [];
-    if (!pats.length) box.append(el("div", { className: "muted small" }, "Своих правил нет. Их добавляет кнопка «Игнорировать такие» в «Неразобранном»."));
-    const chips = el("div", { className: "students" });
-    for (const p of pats) {
-      const rm = el("button", { className: "btn small danger", textContent: "✕", title: "Снова принимать такие файлы" });
-      rm.onclick = async () => {
-        try { await api("PUT", "/ui/api/settings", { ignore_patterns: pats.filter((x) => x !== p) }); note(`Правило «${p}» удалено`); folderDraft = null; }
-        catch (e) { note(e.message, true); }
-      };
-      chips.append(el("div", { className: "student" }, el("code", {}, p), rm));
+    const add = el("button", { className: "btn ghost", textContent: "+ Новая группа" });
+    add.onclick = newGroup;
+    side.append(add, el("div", { className: "eyebrow", style: "margin-top:10px" }, "Ещё"));
+    for (const [mode, ic, title, cnt] of [["unsorted", "📥", "Неразобранное", proj.unsorted.length], ["recent", "🕘", "Последние", null]]) {
+      const b = el("button", { className: "side-item" + (view.mode === mode ? " active" : "") }, el("span", {}, ic), el("b", {}, title),
+        cnt != null ? el("span", { className: "cnt" }, String(cnt)) : null);
+      b.onclick = () => { view = { ...view, mode }; render(); };
+      side.append(b);
     }
-    box.append(chips);
+    const finder = el("button", { className: "side-item" }, el("span", {}, "📂"), el("b", {}, "Папка в Finder"));
+    finder.onclick = () => openFolder("projects");
+    side.append(finder);
+    const c = disk.counts || {};
+    const dtext = !disk.has_token ? "не подключён" : disk.state === "offline" ? `нет интернета, ждут ${c.pending || 0}`
+      : disk.state === "auth_error" ? "ошибка токена" : `выгружено ${c.done || 0}` + (c.pending ? `, в очереди ${c.pending}` : "");
+    const dbtn = el("button", { className: "side-item", title: "Настройки Яндекс Диска" }, el("span", {}, "☁️"), el("span", { className: "small" }, "Яндекс Диск: " + dtext));
+    dbtn.onclick = () => { App.showTab("settings"); if (App.openSettings) App.openSettings("disk"); };
+    side.append(dbtn);
+    return side;
+  }
+
+  function renderMain() {
+    if (view.mode === "unsorted") return renderUnsorted();
+    if (view.mode === "recent") return renderRecent();
+    if (view.mode === "student") {
+      const st = allStudents().find((s) => s.id === view.studentId);
+      if (st) return renderStudent(st);
+    }
+    const g = proj.groups.find((x) => x.id === view.groupId);
+    return g ? renderGroup(g) : renderNoGroups();
+  }
+
+  function renderNoGroups() {
+    const add = el("button", { className: "btn big", textContent: "+ Создать первую группу" });
+    add.onclick = newGroup;
+    return el("section", { className: "box empty" }, el("div", { className: "big" }, "👩‍🎓"),
+      el("h2", {}, "Добавьте группу и учеников"),
+      el("p", { className: "muted" }, "Тогда работы детей будут сами раскладываться по папкам: Группа → Ученик → Дата.", el("br"),
+        "Работа попадёт к ученику, если в названии файла есть его имя: «Маша_кот.sb3», «masha robot»."), add);
+  }
+
+  function renderGroup(g) {
+    const box = el("section", { className: "box" });
+    const isNow = g.id === proj.active_group;
+    const now = el("button", { className: "btn " + (isNow ? "quiet" : "orange") + " small", textContent: isNow ? "✓ Занимается сейчас" : "Сейчас занимается эта группа" });
+    now.disabled = isNow;
+    now.onclick = () => setActiveGroup(g.id);
+    const ren = el("button", { className: "btn ghost small", textContent: "Переименовать" });
+    ren.onclick = async () => {
+      const name = await App.prompt("Новое название группы", g.name);
+      if (name) { try { await api("PUT", `/ui/api/groups/${g.id}`, { name }); ok("Группа переименована"); } catch (e) { fail(e.message); } reload(); }
+    };
+    const del = el("button", { className: "btn red small", textContent: "Удалить" });
+    del.onclick = async () => {
+      if (!(await App.confirm(`Удалить группу «${g.name}» и её список учеников?\nРаботы на диске останутся.`, { okText: "Удалить", danger: true }))) return;
+      await api("DELETE", `/ui/api/groups/${g.id}`); ok(`Группа «${g.name}» удалена`); view.groupId = null; reload();
+    };
+    box.append(el("div", { className: "box-title" }, el("h2", {}, g.name), now, el("div", { className: "spacer" }), ren, del));
+
+    const grid = el("div", { className: "students-grid" });
+    g.students.forEach((s, i) => {
+      const card = el("button", { className: "scard", style: `--c:${COLORS[i % COLORS.length]}` },
+        el("div", { className: "ava" }, s.name.slice(0, 1).toUpperCase()),
+        el("b", {}, s.name),
+        s.aliases.length ? el("div", { className: "aka" }, s.aliases.join(", ")) : null,
+        el("div", { className: "counts" }, s.files_today ? el("span", { className: "today" }, `+${s.files_today} сегодня`) : null,
+          ` ${s.files_total} ${plural(s.files_total, "работа", "работы", "работ")}`));
+      card.onclick = () => { view = { mode: "student", groupId: g.id, studentId: s.id }; render(); };
+      grid.append(card);
+    });
+    const add = el("button", { className: "scard add" }, el("div", { style: "font-size:30px" }, "+"), "Добавить учеников");
+    add.onclick = () => addStudents(g);
+    grid.append(add);
+    box.append(grid);
     return box;
   }
 
-  function renderDiskSettings() {
-    let sec = $("diskSettings");
-    if (!sec) {
-      sec = el("section", { className: "panel", id: "diskSettings" });
-      $("settingsExtra").append(sec);
-    }
-    if (sec.contains(document.activeElement)) return;  // учитель вводит данные — не перерисовываем
-    const st = App.state.settings || {};
-    const cid = el("input", { type: "text", value: disk.client_id || "", placeholder: "ClientID (32 символа)", style: "flex:1" });
-    const openAuth = el("button", { className: "btn", textContent: "Получить токен" });
-    openAuth.onclick = async () => {
-      const id = cid.value.trim();
-      if (!/^[0-9a-fA-F]{32}$/.test(id)) { note("Сначала вставьте ClientID (шаг 3)", true); return; }
-      try {
-        await api("PUT", "/ui/api/settings", { disk_client_id: id });
-        await api("POST", "/ui/api/open-url", { url: `https://oauth.yandex.ru/authorize?response_type=token&client_id=${id}` });
-      } catch (e) { note(e.message, true); }
-    };
-    const createApp = el("button", { className: "btn", textContent: "Открыть oauth.yandex.ru" });
-    createApp.onclick = () => api("POST", "/ui/api/open-url", { url: "https://oauth.yandex.ru/client/new" }).catch((e) => note(e.message, true));
-    const tok = el("input", { type: "password", placeholder: disk.has_token ? "токен сохранён в Связке ключей" : "вставьте токен", style: "flex:1" });
-    const saveTok = el("button", { className: "btn primary", textContent: "Сохранить токен" });
-    const result = el("div", { className: "muted" });
-    saveTok.onclick = async () => {
-      try { const r = await api("POST", "/ui/api/disk/token", { token: tok.value }); result.textContent = r.message; tok.value = ""; }
-      catch (e) { result.textContent = e.message; }
+  async function addStudents(g) {
+    const ta = el("textarea", { rows: 7, placeholder: "Маша, Masha, Машуня\nСаша, Sasha, Александр\nОля" });
+    const v = await App.dialog({
+      title: `Ученики группы «${g.name}»`,
+      body: [el("p", { className: "muted small" }, "По одному ученику в строке. После запятой можно написать, как ребёнок подписывает файлы: латиницей, уменьшительно."), ta],
+      buttons: [{ text: "Отмена", value: null }, { text: "Добавить", kind: "primary", value: "ok" }],
+      onOpen: () => setTimeout(() => ta.focus(), 30),
+    });
+    if (v !== "ok" || !ta.value.trim()) return;
+    try {
+      const r = await api("POST", "/ui/api/students/bulk", { group_id: g.id, text: ta.value });
+      ok(`Добавлено учеников: ${r.added}`);
+      if (r.errors.length) fail(r.errors.join("; "));
+    } catch (e) { fail(e.message); }
+    reload();
+  }
+
+  async function newGroup() {
+    const name = await App.prompt("Новая группа", "", { label: "Например: «Пн 10.00» или «Скретч младшие»", okText: "Создать" });
+    if (!name) return;
+    try {
+      const r = await api("POST", "/ui/api/groups", { name });
+      view = { mode: "group", groupId: r.id, studentId: null };
+      ok(`Группа «${name}» создана — теперь добавьте учеников`);
+    } catch (e) { fail(e.message); }
+    reload();
+  }
+
+  function renderStudent(st) {
+    const box = el("section", { className: "box" });
+    const back = el("button", { className: "btn link", textContent: `← ${st.group}` });
+    back.onclick = () => { view = { mode: "group", groupId: view.groupId, studentId: null }; render(); };
+    const edit = el("button", { className: "btn ghost small", textContent: "Имя и варианты" });
+    edit.onclick = async () => {
+      const name = el("input", { type: "text", value: st.name });
+      const aka = el("input", { type: "text", value: st.aliases.join(", "), placeholder: "Masha, Машуня" });
+      const v = await App.dialog({ title: "Ученик", body: [el("label", { className: "field" }, el("span", {}, "Имя"), name),
+        el("label", { className: "field" }, el("span", {}, "Как ещё подписывает файлы (через запятую)"), aka)],
+        buttons: [{ text: "Отмена", value: null }, { text: "Сохранить", kind: "primary", value: "ok" }] });
+      if (v !== "ok") return;
+      try { await api("PUT", `/ui/api/students/${st.id}`, { name: name.value, aliases: aka.value.split(",").map((x) => x.trim()).filter(Boolean) }); ok("Сохранено"); }
+      catch (e) { fail(e.message); }
       reload();
     };
-    const check = el("button", { className: "btn", textContent: "Проверить подключение" });
-    check.onclick = async () => {
-      result.textContent = "проверяю…";
-      try { const r = await api("POST", "/ui/api/disk/check"); result.textContent = (r.ok ? "✅ " : "❌ ") + r.message; }
-      catch (e) { result.textContent = e.message; }
+    const del = el("button", { className: "btn red small", textContent: "Удалить ученика" });
+    del.onclick = async () => {
+      if (!(await App.confirm(`Удалить ученика «${st.name}» из списка? Его работы на диске останутся.`, { okText: "Удалить", danger: true }))) return;
+      await api("DELETE", `/ui/api/students/${st.id}`); view.mode = "group"; ok("Ученик удалён"); reload();
     };
-    const delTok = el("button", { className: "btn small danger", textContent: "Удалить токен" });
-    delTok.onclick = async () => { if (await ask("Удалить токен Яндекс Диска с этого Mac?")) { await api("DELETE", "/ui/api/disk/token"); reload(); } };
-    const rootName = el("input", { type: "text", value: st.disk_root || "Компьютерный класс", style: "flex:1" });
-    const saveRoot = el("button", { className: "btn small", textContent: "Сохранить" });
-    saveRoot.onclick = () => api("PUT", "/ui/api/settings", { disk_root: rootName.value }).then(() => note("Папка на Диске сохранена")).catch((e) => note(e.message, true));
+    box.append(back, el("div", { className: "box-title", style: "margin-top:8px" },
+      el("div", { className: "scard", style: "--c:var(--teal);padding:0;outline:0;box-shadow:none;background:none" }, el("div", { className: "ava" }, st.name.slice(0, 1).toUpperCase())),
+      el("div", {}, el("h2", {}, st.name), st.aliases.length ? el("div", { className: "muted small" }, "также подписывает: " + st.aliases.join(", ")) : null),
+      el("div", { className: "spacer" }), edit, del));
+    const list = el("div", {}, el("p", { className: "muted" }, "Загрузка…"));
+    box.append(list);
+    api("GET", `/ui/api/students/${st.id}/files`).then((r) => {
+      list.innerHTML = "";
+      if (!r.files.length) { list.append(el("p", { className: "muted" }, "Работ пока нет.")); return; }
+      let lastDate = null;
+      for (const f of r.files) {
+        if (f.lesson_date !== lastDate) { lastDate = f.lesson_date; list.append(el("div", { className: "eyebrow", style: "margin-top:14px" }, fmtDate(f.lesson_date))); }
+        const open = el("button", { className: "btn small", textContent: "Открыть" });
+        open.onclick = () => openFile(f.id);
+        const show = el("button", { className: "btn ghost small", textContent: "В Finder" });
+        show.onclick = () => reveal(f.id);
+        const move = el("button", { className: "btn quiet small", textContent: "Другому ученику" });
+        move.onclick = async () => { const sid = await pickStudent(`Чья работа «${f.name}»?`); if (sid) assign(f, sid); };
+        list.append(el("div", { className: "file-row" }, el("span", { className: "file-ico" }, icon(f.name)),
+          el("div", { className: "file-info" }, el("b", {}, f.name), el("span", { className: "muted small" }, `ноутбук ${f.laptop} · ${fmtTime(f.received_at)} · ${fmtSize(f.size)}`)),
+          f.exists ? open : el("span", { className: "muted small" }, "файл удалён с Mac"), show, move));
+      }
+    }).catch((e) => fail(e.message));
+    return box;
+  }
 
-    sec.innerHTML = "";
-    sec.append(el("h2", {}, "Яндекс Диск"),
-      el("p", {}, disk.has_token ? "✅ Токен сохранён в Связке ключей Mac." : "Токен ещё не введён — проекты сохраняются только на Mac."),
-      el("ol", { className: "steps" },
-        el("li", {}, "Войдите в браузере в Яндекс-аккаунт, на чей Диск складывать проекты."),
-        el("li", {}, "Нажмите ", createApp, ". Создайте приложение: название «Компьютерный класс», платформа «Веб-сервисы», Redirect URI: ",
-          el("code", {}, "https://oauth.yandex.ru/verification_code"),
-          ". В доступах отметьте «Яндекс Диск REST API → Запись в любом месте на Диске» (и, по желанию, «Доступ к информации о Диске» — для показа свободного места)."),
-        el("li", {}, "Скопируйте ClientID приложения сюда: ", cid),
-        el("li", {}, "Нажмите ", openAuth, ", разрешите доступ и скопируйте показанный токен."),
-        el("li", {}, "Вставьте токен: ", tok, " ", saveTok)),
-      el("div", { className: "row" }, check, delTok), result,
-      el("div", { className: "row" }, el("span", {}, "Папка школы на Диске:"), rootName, saveRoot),
-      el("p", { className: "muted small" }, "На Диске: <папка школы>/<группа>/<ученик>/<дата>/. На Диск попадают только разобранные по ученикам файлы."));
+  function renderUnsorted() {
+    const box = el("section", { className: "box" }, el("div", { className: "box-title" }, el("h2", {}, "📥 Неразобранное"),
+      el("span", { className: "muted small" }, "Нажмите на имя ученика — работа переедет в его папку")));
+    if (!proj.unsorted.length) {
+      box.append(el("div", { className: "empty" }, el("div", { className: "big" }, "👍"), el("p", {}, "Всё разобрано!")));
+      return box;
+    }
+    const active = proj.groups.find((g) => g.id === proj.active_group);
+    const sameName = {};
+    for (const f of proj.unsorted) sameName[f.name] = (sameName[f.name] || 0) + 1;
+    const wrap = el("div", { style: "display:grid;gap:16px" });
+    for (const f of proj.unsorted) {
+      const chips = el("div", { className: "assign" });
+      const students = active ? active.students : [];
+      for (const s of students) {
+        const b = el("button", { className: "btn small", textContent: s.name });
+        b.onclick = () => assign(f, s.id);
+        chips.append(b);
+      }
+      const other = el("button", { className: "btn ghost small", textContent: students.length ? "Другой ученик…" : "Выбрать ученика…" });
+      other.onclick = async () => { const sid = await pickStudent(`Чья работа «${f.name}»?`); if (sid) assign(f, sid); };
+      chips.append(other);
+      const show = el("button", { className: "btn quiet small", textContent: "Посмотреть" });
+      show.onclick = () => openFile(f.id);
+      const ign = el("button", { className: "btn quiet small", textContent: "Это мусор", title: "Больше никогда не принимать такие файлы (например, журналы программ)" });
+      ign.onclick = async () => {
+        const e = f.name.includes(".") ? "*." + ext(f.name) : f.name.toLowerCase();
+        const pattern = await App.prompt("Больше не принимать такие файлы", e,
+          { label: "*.dpapi — все файлы с таким расширением; agent-errors.dpapi — только это имя; logs/ — всё из папки logs", okText: "Не принимать" });
+        if (!pattern) return;
+        try { const r = await api("POST", "/ui/api/ignore", { pattern }); ok(`Файлы «${r.pattern}» больше не принимаются. Убрано: ${r.removed}`); }
+        catch (err) { fail(err.message); }
+        reload();
+      };
+      const many = sameName[f.name] > 1;
+      const del = el("button", { className: "btn red small", textContent: many ? `Удалить все (${sameName[f.name]})` : "Удалить" });
+      del.onclick = async () => {
+        if (!(await App.confirm(many ? `Удалить все файлы «${f.name}» (${sameName[f.name]} шт.)?\nОни уйдут в Корзину Mac.` : `Удалить «${f.name}»?\nФайл уйдёт в Корзину Mac.`, { okText: "Удалить", danger: true }))) return;
+        try {
+          if (many) await api("POST", "/ui/api/files/delete-unsorted-by-name", { name: f.name });
+          else await api("POST", `/ui/api/files/${f.id}/delete`);
+          ok("Удалено в Корзину");
+        } catch (err) { fail(err.message); }
+        reload();
+      };
+      wrap.append(el("div", { className: "unsorted-card" },
+        el("div", { className: "head" }, el("span", { className: "file-ico" }, icon(f.name)),
+          el("div", { className: "file-info" }, el("b", {}, f.name), el("span", { className: "muted small" }, `ноутбук ${f.laptop} · ${fmtTime(f.received_at)} · ${fmtSize(f.size)}`)),
+          show, ign, del),
+        el("div", { className: "muted small" }, active ? `Чья это работа? Группа «${active.name}»:` : "Чья это работа? (Выберите «Сейчас занимается» на экране «Класс» — здесь появятся кнопки с именами.)"),
+        chips));
+    }
+    box.append(wrap);
+    return box;
+  }
+
+  function renderRecent() {
+    const box = el("section", { className: "box" }, el("div", { className: "box-title" }, el("h2", {}, "🕘 Последние работы")));
+    if (!proj.recent.length) box.append(el("p", { className: "muted" }, "Пока ничего не получено."));
+    for (const f of proj.recent.slice(0, 100)) {
+      const where = f.status === "sorted" ? `${f.group_name} · ${f.student}` : f.status === "unsorted" ? "неразобранное" : f.status === "deleted" ? "удалено" : "…";
+      const show = el("button", { className: "btn ghost small", textContent: "В Finder" });
+      show.onclick = () => reveal(f.id);
+      box.append(el("div", { className: "file-row" }, el("span", { className: "file-ico" }, icon(f.name)),
+        el("div", { className: "file-info" }, el("b", {}, f.name), el("span", { className: "muted small" }, `ноутбук ${f.laptop} · ${fmtTime(f.received_at)}`)),
+        el("span", { className: "pill" + (f.status === "unsorted" ? " info" : "") }, where), f.status !== "deleted" ? show : null));
+    }
+    return box;
   }
 
   // ---------- «Конец урока» ----------
-  const modal = el("div", { className: "modal", hidden: true },
-    el("div", { className: "modal-box wide" }, el("h2", {}, "Конец урока"), el("div", { id: "elProgress" }),
-      el("div", { className: "row" }, el("div", { className: "spacer" }),
-        Object.assign(el("button", { className: "btn primary", textContent: "Закрыть" }), { onclick: () => (modal.hidden = true) }))));
-  document.body.append(modal);
-  const STAGE_ICONS = { wait: "⏳", collect: "📥", cleanup: "🧹", done: "✅", warning: "⚠️", error: "❌", skip: "⏸" };
-
+  const STAGE = { wait: "⏳", collect: "📥", cleanup: "🧹", done: "✅", warning: "⚠️", error: "❌", skip: "⏸" };
+  let elBox = null;
+  function endLessonWindow() {
+    if (elBox && document.body.contains(elBox)) return elBox;
+    elBox = el("div", {}, el("p", { className: "muted" }, "Начинаю…"));
+    App.dialog({ title: "🏁 Конец урока", wide: true, body: [elBox], buttons: [{ text: "Закрыть", kind: "primary", value: null }] });
+    return elBox;
+  }
   function renderEndLesson(ev) {
-    const box = $("elProgress");
+    const box = endLessonWindow();
     box.innerHTML = "";
-    box.append(el("p", { className: "muted" }, ev.running ? "Идёт сбор… не выключайте ноутбуки." : "Завершено."));
     const nums = Object.keys(ev.progress).sort((a, b) => Number(a) - Number(b));
+    const done = nums.filter((n) => ev.progress[n].stage === "done").length;
+    box.append(el("p", {}, ev.running ? el("b", {}, `Собираю работы… готово ${done} из ${nums.length}. Не выключайте ноутбуки.`)
+      : el("b", { className: done === nums.length ? "ok-text" : "error" }, done === nums.length ? "Готово! Все работы собраны, ноутбуки очищены." : `Готово ${done} из ${nums.length}. Причины — ниже.`)));
     for (const n of nums) {
       const p = ev.progress[n];
-      box.append(el("div", { className: "el-row " + p.stage }, el("b", {}, `${STAGE_ICONS[p.stage] || ""} Ноутбук ${n}`), el("span", {}, p.text)));
-    }
-    if (!ev.running) {
-      const bad = nums.filter((n) => !["done"].includes(ev.progress[n].stage));
-      note(bad.length ? `Конец урока: на ноутбуках ${bad.join(", ")} очистка не выполнена` : "Конец урока: все ноутбуки собраны и очищены", bad.length > 0);
+      box.append(el("div", { className: "el-row " + p.stage }, el("b", {}, `${STAGE[p.stage] || ""} Ноутбук ${n}`), el("span", {}, p.text)));
     }
   }
-
   $("btnEndLesson").onclick = async () => {
+    if (!App.state.laptops.length) { fail("Сначала подключите ноутбуки"); return; }
     const targets = App.targets();
-    if (Array.isArray(targets) && !targets.length) { note("Выберите ноутбуки", true); return; }
-    if (!await ask("Для: " + App.targetTitle() + "\n\n" +
-      "1) с ноутбуков будут собраны все оставшиеся проекты;\n2) после подтверждения получения КАЖДОГО файла " +
-      "отслеживаемые папки будут очищены (файлы уйдут в корзину агента на 7 дней).\n\nЕсли какой-то файл не удалось получить — на этом ноутбуке ничего не удаляется.", { title: "🏁 Конец урока", okText: "Начать" })) return;
-    try {
-      await api("POST", "/ui/api/end-lesson", { targets });
-      modal.hidden = false;
-    } catch (e) { note(e.message, true); }
+    if (!(await App.confirm("Для: " + App.targetTitle() + "\n\n1) С ноутбуков соберутся все оставшиеся работы.\n2) Когда Mac подтвердит получение КАЖДОГО файла, папки на ноутбуках очистятся (файлы на 7 дней уйдут в корзину ноутбука).\n\nЕсли какой-то файл не удалось получить — на этом ноутбуке ничего не удаляется.",
+      { title: "🏁 Конец урока", okText: "Начать" }))) return;
+    try { await api("POST", "/ui/api/end-lesson", { targets }); endLessonWindow(); }
+    catch (e) { fail(e.message); }
   };
 
   // ---------- Подписки ----------
-  const listener = (state) => renderCollectSettings(state);
+  const listener = () => {};
   listener.onEvent = (m) => {
     if (["projects_changed", "file", "disk_changed"].includes(m.kind)) reload();
-    if (m.kind === "file") App.log(`Получен файл от ноутбука ${m.number}: ${m.name}`);
-    if (m.kind === "end_lesson") { modal.hidden = false; renderEndLesson(m); }
+    if (m.kind === "file") App.log(`Получена работа от ноутбука ${m.number}: ${m.name}`);
+    if (m.kind === "end_lesson") {
+      renderEndLesson(m);
+      if (!m.running) {
+        const bad = Object.keys(m.progress).filter((n) => m.progress[n].stage !== "done");
+        App.toast(bad.length ? `Конец урока: на ноутбуках ${bad.join(", ")} очистка не выполнена` : "Конец урока: все работы собраны, ноутбуки очищены", bad.length ? "error" : "ok");
+      }
+    }
   };
   App.onState(listener);
   reload();

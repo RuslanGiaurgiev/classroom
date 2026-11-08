@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 import logging
 import os
 import shutil
@@ -73,6 +74,8 @@ class Sorter:
             web.delete("/ui/api/students/{id}", self.handle_student_delete),
             web.post("/ui/api/files/{id}/assign", self.handle_assign),
             web.post("/ui/api/files/{id}/reveal", self.handle_reveal),
+            web.post("/ui/api/files/{id}/open", self.handle_open_file),
+            web.get("/ui/api/students/{id}/files", self.handle_student_files),
             web.post("/ui/api/files/{id}/delete", self.handle_delete),
             web.post("/ui/api/files/delete-unsorted-by-name", self.handle_delete_by_name),
             web.post("/ui/api/ignore", self.handle_ignore),
@@ -168,7 +171,7 @@ class Sorter:
         unsorted = files("r.status='unsorted'", 500)
         st = self.server.storage.settings()
         return web.json_response({
-            "groups": self.db.groups(),
+            "groups": self.db.groups(date.today().isoformat()),
             "active_group": st.get("active_group"),
             "unsorted": unsorted,
             "recent": files("1=1", 100),
@@ -354,6 +357,26 @@ class Sorter:
         await self.server.broadcast_state()
         await self.server.broadcast_event({"kind": "projects_changed"})
         return web.json_response({"pattern": pattern[0], "removed": removed})
+
+    async def handle_student_files(self, request: web.Request) -> web.Response:
+        """Работы ученика (свежие сверху)."""
+        rows = self.db.q("SELECT id, laptop, name, size, received_at, lesson_date, project_path FROM received"
+                         " WHERE student_id=? AND status='sorted' ORDER BY received_at DESC LIMIT 500",
+                         (int(request.match_info["id"]),))
+        for r in rows:
+            r["exists"] = bool(r["project_path"]) and Path(r["project_path"]).exists()
+        return web.json_response({"files": rows})
+
+    async def handle_open_file(self, request: web.Request) -> web.Response:
+        """Открыть работу на Mac программой по умолчанию."""
+        f = self.db.one("SELECT project_path, inbox_path FROM received WHERE id=?", (int(request.match_info["id"]),))
+        if f is None:
+            return web.json_response({"error": "Файл не найден"}, status=404)
+        path = f["project_path"] if f["project_path"] and Path(f["project_path"]).exists() else f["inbox_path"]
+        if not Path(path).exists():
+            return web.json_response({"error": "Файл удалён с Mac"}, status=404)
+        _open([path])
+        return web.json_response({"ok": True})
 
     async def handle_reveal(self, request: web.Request) -> web.Response:
         """Показать файл в Finder."""

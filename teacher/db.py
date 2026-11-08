@@ -96,11 +96,18 @@ class DB:
 
     # ---------- Группы и ученики ----------
 
-    def groups(self) -> list[dict]:
+    def groups(self, today: str | None = None) -> list[dict]:
+        """Группы с учениками; у каждого ученика — сколько работ всего и сегодня."""
         groups = self.q("SELECT * FROM groups ORDER BY name COLLATE NOCASE")
         students = self.q("SELECT * FROM students ORDER BY name COLLATE NOCASE")
+        counts = {r["student_id"]: r for r in self.q(
+            "SELECT student_id, COUNT(*) AS total, SUM(lesson_date=?) AS today FROM received"
+            " WHERE status='sorted' AND student_id IS NOT NULL GROUP BY student_id", (today or "",))}
         for g in groups:
-            g["students"] = [{**s, "aliases": json.loads(s["aliases"])} for s in students if s["group_id"] == g["id"]]
+            g["students"] = [{**s, "aliases": json.loads(s["aliases"]),
+                              "files_total": (counts.get(s["id"]) or {}).get("total", 0),
+                              "files_today": (counts.get(s["id"]) or {}).get("today", 0) or 0}
+                             for s in students if s["group_id"] == g["id"]]
         return groups
 
     def students(self, group_id: int | None = None) -> list[dict]:

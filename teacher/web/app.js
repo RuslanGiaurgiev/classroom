@@ -57,7 +57,8 @@ function dialog({ title, body = [], buttons = [{ text: "Закрыть", value: 
     const onKey = (e) => { if (e.key === "Escape") close(null); };
     const acts = el("div", { className: "modal-actions" });
     for (const b of buttons) {
-      const btn = el("button", { className: "btn " + (b.kind || ""), textContent: b.text });
+      const KIND = { primary: "", "": "ghost", danger: "red", "danger solid": "red" };
+      const btn = el("button", { className: "btn " + (b.kind in KIND ? KIND[b.kind] : (b.kind || "ghost")), textContent: b.text });
       btn.onclick = async () => {
         if (b.onClick) { const r = await b.onClick(btn); if (r === false) return; }
         close(b.value);
@@ -95,16 +96,16 @@ window.App = {
 };
 
 // ================= Вкладки =================
-document.querySelectorAll(".tab").forEach((t) => {
-  t.onclick = () => {
-    document.querySelectorAll(".tab").forEach((x) => x.classList.toggle("active", x === t));
-    document.querySelectorAll(".tabpage").forEach((p) => (p.hidden = p.id !== "tab-" + t.dataset.tab));
-  };
-});
+function showTab(name) {
+  document.querySelectorAll(".navbtn").forEach((x) => x.classList.toggle("active", x.dataset.tab === name));
+  document.querySelectorAll(".tabpage").forEach((p) => (p.hidden = p.id !== "tab-" + name));
+  window.scrollTo(0, 0);
+}
+App.showTab = showTab;
+document.querySelectorAll(".navbtn").forEach((t) => (t.onclick = () => showTab(t.dataset.tab)));
 {
   const t = new URLSearchParams(location.search).get("tab");
-  const btn = t && document.querySelector(`.tab[data-tab="${t}"]`);
-  if (btn) btn.click();
+  if (t && document.querySelector(`.navbtn[data-tab="${t}"]`)) showTab(t);
 }
 
 // ================= Кому отправлять =================
@@ -117,12 +118,11 @@ function targetTitle() {
 function renderTarget() {
   const chip = $("targetChip");
   if (selected.size) {
-    chip.textContent = `выбранных: ${[...selected].sort(sortNum).join(", ")}`;
-    chip.classList.add("selected");
+    chip.textContent = `только ${[...selected].sort(sortNum).join(", ")}`;
+    chip.classList.add("sel");
   } else {
-    const online = state.laptops.filter((l) => l.online).length;
-    chip.textContent = `всех ноутбуков (на связи ${online} из ${state.laptops.length})`;
-    chip.classList.remove("selected");
+    chip.textContent = "все ноутбуки";
+    chip.classList.remove("sel");
   }
   $("btnClearSel").hidden = !selected.size;
   $("selHint").hidden = !!selected.size || !state.laptops.length;
@@ -185,19 +185,19 @@ const BROWSER_NAMES = { chrome: "Chrome", yandex: "Яндекс", edge: "Edge" }
 function laptopBadges(l) {
   const out = [];
   if (l.online && l.screen === "lock") out.push(el("span", { className: "pill lock" }, "🔒 внимание"));
-  else if (l.online && l.screen === "message") out.push(el("span", { className: "pill accent" }, "💬 сообщение"));
-  else if (l.online && l.screen === "countdown") out.push(el("span", { className: "pill warn" }, "⏻ отсчёт"));
+  else if (l.online && l.screen === "message") out.push(el("span", { className: "pill msg" }, "💬 сообщение"));
+  else if (l.online && l.screen === "countdown") out.push(el("span", { className: "pill warn" }, "⏳ отсчёт выключения"));
   else if (l.locked) out.push(el("span", { className: "pill lock" }, "🔒 включится при подключении"));
   if (l.shutdown) out.push(el("span", { className: "pill warn" }, l.shutdown === "reboot" ? "перезагрузка…" : "выключение…"));
-  if (l.pending_files) out.push(el("span", { className: "pill accent" }, `📤 ${l.pending_files} ждут отправки`));
+  if (l.pending_files) out.push(el("span", { className: "pill info" }, `📤 ${l.pending_files} ждут отправки`));
   for (const p of state.materials || []) {
     const t = p.targets[l.number];
     if (t && (t.state === "downloading" || t.state === "sent")) {
       const pct = p.total_size ? Math.round((t.done || 0) * 100 / p.total_size) : 0;
-      out.push(el("span", { className: "pill accent" }, `⬇️ ${pct}%`));
+      out.push(el("span", { className: "pill info" }, `⬇️ материалы ${pct}%`));
     }
   }
-  if (l.update_status) out.push(el("span", { className: "pill" + (l.update_status.startsWith("ошибка") ? " warn" : ""), title: l.update_status }, "⟳ " + l.update_status.slice(0, 40)));
+  if (l.update_status) out.push(el("span", { className: "pill" + (l.update_status.startsWith("ошибка") ? " warn" : ""), title: l.update_status }, "🔄 " + l.update_status.slice(0, 40)));
   return out;
 }
 
@@ -208,12 +208,12 @@ function renderLaptops() {
   for (const n of [...selected]) if (!numbers.has(n)) selected.delete(n);
 
   for (const l of state.laptops) {
-    const menu = el("button", { className: "btn small menu", textContent: "⋯", title: "Подробнее, изменить номер, отвязать" });
+    const menu = el("button", { className: "menu", textContent: "⋯", title: "Подробнее, изменить номер, отвязать" });
     menu.onclick = (e) => { e.stopPropagation(); laptopDialog(l); };
     const sub = l.online
       ? [l.username || "—", l.browsers && l.browsers.length ? l.browsers.map((b) => BROWSER_NAMES[b] || b).join(", ") : null].filter(Boolean).join(" · ")
       : "не в сети · " + fmtAgo(l.last_seen);
-    const tile = el("div", { className: "tile" + (selected.has(l.number) ? " selected" : "") + (l.online ? "" : " offline"), title: "Нажмите, чтобы выбрать" },
+    const tile = el("div", { className: "tile" + (selected.has(l.number) ? " sel" : "") + (l.online ? "" : " off"), title: "Нажмите, чтобы выбрать", tabIndex: 0 },
       el("div", { className: "top" },
         el("span", { className: "dot" + (l.online ? " on" : "") }),
         el("span", { className: "num" }, l.number),
@@ -225,7 +225,7 @@ function renderLaptops() {
     grid.append(tile);
   }
   const online = state.laptops.filter((l) => l.online).length;
-  $("summary").textContent = state.laptops.length ? `на связи ${online} из ${state.laptops.length}` : "";
+  $("onlineBig").textContent = state.laptops.length ? `💻 на связи ${online} из ${state.laptops.length}` : "";
   $("empty").hidden = state.laptops.length > 0;
   $("btnSelectAll").hidden = !state.laptops.length;
   const t = state.teacher || {};
@@ -247,9 +247,9 @@ async function laptopDialog(l) {
   const v = await dialog({
     title: `💻 Ноутбук ${l.number}`, body: [info],
     buttons: [
-      { text: "Отвязать", kind: "danger", value: "unpair" },
-      { text: "Изменить номер", value: "rename" },
-      { text: "Готово", kind: "primary", value: null },
+      { text: "Отвязать", kind: "red", value: "unpair" },
+      { text: "Изменить номер", kind: "orange", value: "rename" },
+      { text: "Готово", value: null },
     ],
   });
   if (v === "rename") renameLaptop(l.number);
@@ -260,6 +260,8 @@ async function laptopDialog(l) {
   }
 }
 
+App.laptopDialog = (l) => laptopDialog(l);
+App.renameLaptop = (n) => renameLaptop(n);
 async function renameLaptop(old) {
   const n = await promptBox(`Новый номер для ноутбука ${old}`, old, { label: "Номер с наклейки на мониторе" });
   if (!n || n === old) return;
@@ -293,7 +295,7 @@ function renderRequests() {
     while (taken.has(String(n))) n++;
     taken.add(String(n));
     const num = el("input", { type: "text", maxLength: 10, placeholder: "номер", className: "req-num", value: String(n) });
-    const ok = el("button", { className: "btn primary", textContent: "Принять" });
+    const ok = el("button", { className: "btn", textContent: "Принять" });
     ok.onclick = async () => {
       const number = num.value.trim();
       if (!number) { num.focus(); return; }
@@ -303,7 +305,7 @@ function renderRequests() {
       catch (e) { toast(e.message, "error"); }
     };
     num.onkeydown = (e) => { if (e.key === "Enter") ok.click(); };
-    const no = el("button", { className: "btn", textContent: "Отклонить" });
+    const no = el("button", { className: "btn ghost", textContent: "Отклонить" });
     no.onclick = () => api("POST", `/ui/api/pair-requests/${r.id}/reject`).catch((e) => toast(e.message, "error"));
     box.append(el("div", { className: "req" },
       el("div", { className: "match", title: "Число для сверки — такое же на экране ноутбука" }, r.match_code),
@@ -316,6 +318,7 @@ function renderRequests() {
 // ================= Действия =================
 const lines = (text) => text.split("\n").map((s) => s.trim()).filter(Boolean);
 
+App.saveSettings = (...a) => saveSettings(...a);
 async function saveSettings(patch, okText) {
   try { await api("PUT", "/ui/api/settings", patch); if (okText) toast(okText, "ok"); return true; }
   catch (e) { toast(e.message, "error"); return false; }
@@ -338,16 +341,16 @@ function openSiteDialog() {
     if (!sets.length) { setsBox.append(el("p", { className: "muted small" }, "Наборов урока пока нет. Введите адреса и нажмите «Сохранить как набор» — потом их можно открывать одной кнопкой.")); return; }
     setsBox.append(el("div", { className: "muted small" }, "Наборы урока:"));
     for (const s of sets) {
-      const open = el("button", { className: "btn primary small", textContent: "Открыть", title: s.items.join("\n") });
+      const open = el("button", { className: "btn small", textContent: "Открыть", title: s.items.join("\n") });
       open.onclick = () => { sendCommand("open_urls", { urls: s.items, browser: s.browser }, `Набор «${s.name}»`); open.closest(".modal")._close(); };
-      const load = el("button", { className: "btn small", textContent: "Изменить" });
+      const load = el("button", { className: "btn quiet small", textContent: "Изменить" });
       load.onclick = async () => {
         const text = await promptBox(`Набор «${s.name}»`, s.items.join(" | "), { label: "Адреса и запросы через « | »" });
         if (text == null) return;
         const items = text.split("|").map((x) => x.trim()).filter(Boolean);
         if (await saveSettings({ lesson_sets: sets.map((x) => (x.id === s.id ? { ...x, items } : x)) }, `Набор «${s.name}» изменён`)) setTimeout(drawSets, 300);
       };
-      const del = el("button", { className: "btn small danger", textContent: "Удалить" });
+      const del = el("button", { className: "btn red small", textContent: "Удалить" });
       del.onclick = async () => {
         if (await confirmBox(`Удалить набор «${s.name}»?`, { okText: "Удалить", danger: true })
             && await saveSettings({ lesson_sets: sets.filter((x) => x.id !== s.id) }, `Набор «${s.name}» удалён`)) setTimeout(drawSets, 300);
@@ -358,7 +361,7 @@ function openSiteDialog() {
   drawSets();
   dialog({
     title: "🌐 Открыть сайт или найти", wide: true,
-    body: [el("p", { className: "muted small" }, `Для: ${targetTitle()}`), urls,
+    body: [el("p", { className: "for-line" }, el("span", { className: "target-pill" + (selected.size ? " sel" : "") }, "для: " + targetTitle())), urls,
       el("div", { className: "row" }, el("span", {}, "Браузер:"), browser, el("span", {}, "Поиск в:"), engine), setsBox],
     buttons: [
       { text: "Сохранить как набор", onClick: async () => {
@@ -391,9 +394,9 @@ function materialsDialog() {
     list.innerHTML = "";
     if (!chosen.length) { list.append(el("p", { className: "muted" }, "Ничего не выбрано.")); return; }
     for (const it of chosen) {
-      const rm = el("button", { className: "btn small danger", textContent: "✕" });
+      const rm = el("button", { className: "btn red small", textContent: "✕" });
       rm.onclick = () => { chosen = chosen.filter((x) => x !== it); draw(); };
-      list.append(el("div", { className: "file-row" }, el("span", {}, it.is_dir ? "📁" : "📄"), el("b", { className: "file-info" }, it.name), el("span", { className: "muted" }, fmtMB(it.size)), rm));
+      list.append(el("div", { className: "file-row" }, el("span", { className: "file-ico" }, it.is_dir ? "📁" : "📄"), el("b", { className: "file-info" }, it.name), el("span", { className: "muted" }, fmtMB(it.size)), rm));
     }
     list.append(el("div", { className: "muted small" }, "Всего: " + fmtMB(chosen.reduce((a, x) => a + x.size, 0))));
   };
@@ -409,10 +412,10 @@ function materialsDialog() {
   dialog({
     title: "📁 Отправить материалы", wide: true,
     body: [
-      el("p", { className: "muted small" }, `Для: ${targetTitle()}. На ноутбуках файлы появятся в «${BASE_NAMES[d.base] || d.base}${d.sub ? "\\" + d.sub : ""}» (меняется в «Настройках»).`),
+      el("p", { className: "for-line" }, el("span", { className: "target-pill" + (selected.size ? " sel" : "") }, "для: " + targetTitle())), el("p", { className: "muted small" }, `На ноутбуках файлы появятся в «${BASE_NAMES[d.base] || d.base}${d.sub ? "\\" + d.sub : ""}» (меняется в «Настройках»).`),
       el("div", { className: "row" },
-        Object.assign(el("button", { className: "btn", textContent: "📄 Выбрать файлы…" }), { onclick: pick("files") }),
-        Object.assign(el("button", { className: "btn", textContent: "📁 Выбрать папку…" }), { onclick: pick("folders") })),
+        Object.assign(el("button", { className: "btn orange big", textContent: "📄 Выбрать файлы" }), { onclick: pick("files") }),
+        Object.assign(el("button", { className: "btn orange big", textContent: "📁 Выбрать папку" }), { onclick: pick("folders") })),
       list,
     ],
     buttons: [
@@ -441,7 +444,7 @@ function renderMaterials() {
     const nums = Object.keys(p.targets).sort(sortNum);
     const done = nums.filter((n) => p.targets[n].state === "done").length;
     const notDone = nums.filter((n) => p.targets[n].state !== "done");
-    const again = el("button", { className: "btn small", textContent: "Отправить ещё раз", title: "Тем, кто ещё не получил" });
+    const again = el("button", { className: "btn orange small", textContent: "Отправить ещё раз", title: "Тем, кто ещё не получил" });
     again.onclick = () => api("POST", `/ui/api/materials/${p.id}/resend`, {}).then(() => toast(`«${p.name}»: отправлено повторно`, "ok")).catch((e) => toast(e.message, "error"));
     const grid = el("div", { className: "mat-grid" });
     for (const n of nums) {
@@ -470,8 +473,9 @@ function renderLockButton() {
   const on = lockActiveForTargets();
   const b = $("actLock");
   b.classList.toggle("on", on);
-  b.querySelector(".ic").textContent = on ? "🔓" : "🔒";
-  b.lastChild.textContent = on ? "Снять внимание" : "Внимание";
+  b.querySelector(".ico").textContent = on ? "🔓" : "🔒";
+  b.querySelector("b").textContent = on ? "Снять внимание" : "Внимание";
+  b.querySelector("small").textContent = on ? "вернуть ноутбуки ученикам" : "экран «смотрим на учителя»";
 }
 function toggleLock() {
   if (lockActiveForTargets()) sendCommand("unlock_screen", {}, "Снять «Внимание»");
@@ -485,7 +489,7 @@ function messageDialog() {
     .map(([v, t]) => el("option", { value: v, selected: v === "30" }, t)));
   dialog({
     title: "💬 Сообщение на весь экран",
-    body: [el("p", { className: "muted small" }, `Для: ${targetTitle()}`), text, el("div", { className: "row" }, el("span", {}, "Показывать:"), secs)],
+    body: [el("p", { className: "for-line" }, el("span", { className: "target-pill" + (selected.size ? " sel" : "") }, "для: " + targetTitle())), text, el("div", { className: "row" }, el("span", {}, "Показывать:"), secs)],
     buttons: [
       { text: "Убрать сообщение", onClick: () => { sendCommand("hide_message", {}, "Убрать сообщение"); } },
       { text: "Отмена", value: null },
@@ -503,15 +507,15 @@ const BROWSER_PROCESSES = ["chrome.exe", "browser.exe", "msedge.exe"];
 function closeDialog() {
   const apps = (state.settings || {}).apps || [];
   const btns = apps.map((a) => {
-    const b = el("button", { className: "btn", textContent: a.title, title: a.process });
+    const b = el("button", { className: "btn ghost", textContent: a.title, title: a.process });
     b.onclick = () => { sendCommand("close_apps", { process_names: [a.process] }, `Закрыть ${a.title}`); b.closest(".modal")._close(); };
     return b;
   });
-  const all = el("button", { className: "btn danger", textContent: "Все браузеры" });
+  const all = el("button", { className: "btn red", textContent: "Все браузеры" });
   all.onclick = () => { sendCommand("close_apps", { process_names: BROWSER_PROCESSES }, "Закрыть браузеры"); all.closest(".modal")._close(); };
   dialog({
     title: "✖️ Закрыть программу",
-    body: [el("p", { className: "muted small" }, `Для: ${targetTitle()}. Несохранённая работа в программе пропадёт.`),
+    body: [el("p", { className: "for-line" }, el("span", { className: "target-pill" + (selected.size ? " sel" : "") }, "для: " + targetTitle())), el("p", { className: "muted small" }, "Несохранённая работа в программе пропадёт."),
       el("div", { className: "big-choice" }, ...btns, all),
       el("p", { className: "muted small" }, "Список программ меняется в «Настройках».")],
     buttons: [{ text: "Отмена", value: null }],
@@ -527,15 +531,15 @@ function powerDialog() {
       m._close();
     }
   };
-  const b1 = el("button", { className: "btn danger solid", textContent: "⏻ Выключить" });
-  const b2 = el("button", { className: "btn danger", textContent: "↻ Перезагрузить" });
-  const b3 = el("button", { className: "btn", textContent: "Отменить выключение" });
+  const b1 = el("button", { className: "btn red", textContent: "Выключить" });
+  const b2 = el("button", { className: "btn orange", textContent: "↻ Перезагрузить" });
+  const b3 = el("button", { className: "btn ghost", textContent: "Отменить выключение" });
   b1.onclick = () => act(b1, "shutdown", "Выключить");
   b2.onclick = () => act(b2, "reboot", "Перезагрузить");
   b3.onclick = () => { sendCommand("cancel_shutdown", {}, "Отменить выключение"); b3.closest(".modal")._close(); };
   dialog({
-    title: "⏻ Питание",
-    body: [el("p", { className: "muted small" }, `Для: ${targetTitle()}. Перед выключением ноутбуки успеют отправить новые файлы.`),
+    title: "🔌 Питание",
+    body: [el("p", { className: "for-line" }, el("span", { className: "target-pill" + (selected.size ? " sel" : "") }, "для: " + targetTitle())), el("p", { className: "muted small" }, "На экранах будет отсчёт 30 секунд. Перед выключением ноутбуки успеют отправить новые работы."),
       el("div", { className: "big-choice" }, b1, b2, b3)],
     buttons: [{ text: "Закрыть", value: null }],
   });
@@ -551,90 +555,11 @@ document.querySelectorAll("[data-act]").forEach((b) => {
   });
 });
 
-// ================= Настройки (сайты, программы, обновления) =================
-function renderSettingsBasics() {
-  const st = state.settings || {};
-  const sel = $("setEngine");
-  if (!sel.options.length) for (const [k, title] of Object.entries(st.search_engines || {})) sel.append(el("option", { value: k }, title));
-  sel.value = st.search_engine;
-  if (document.activeElement !== $("setLockText")) $("setLockText").value = st.lock_text || "Внимание на учителя!";
-}
-$("setEngine").onchange = () => saveSettings({ search_engine: $("setEngine").value }, "Поисковая система сохранена");
-$("btnSaveLockText").onclick = () => saveSettings({ lock_text: $("setLockText").value }, "Текст заставки сохранён");
-
-let appsDraft = null;
-function renderAppsEditor(force = false) {
-  if (appsDraft && !force) return;
-  appsDraft = ((state.settings || {}).apps || []).map((a) => ({ ...a }));
-  drawAppsDraft();
-}
-function drawAppsDraft() {
-  const box = $("appsEditor");
-  box.innerHTML = "";
-  appsDraft.forEach((a, i) => {
-    const title = el("input", { type: "text", value: a.title, placeholder: "Название" });
-    title.oninput = () => (a.title = title.value);
-    const proc = el("input", { type: "text", value: a.process, placeholder: "имя.exe" });
-    proc.oninput = () => (a.process = proc.value);
-    const del = el("button", { className: "btn small danger", textContent: "✕" });
-    del.onclick = () => { appsDraft.splice(i, 1); drawAppsDraft(); };
-    box.append(el("div", { className: "row" }, title, proc, del));
-  });
-}
-$("btnAddApp").onclick = () => { appsDraft.push({ title: "", process: "" }); drawAppsDraft(); };
-$("btnSaveApps").onclick = async () => {
-  if (await saveSettings({ apps: appsDraft.filter((a) => a.process.trim()) }, "Список программ сохранён")) { appsDraft = null; setTimeout(() => renderAppsEditor(true), 300); }
-};
-
-function renderUpdates() {
-  let sec = $("updatesSettings");
-  if (!sec) {
-    sec = el("section", { className: "panel", id: "updatesSettings" });
-    $("tab-settings").insertBefore(sec, $("settingsExtra"));
-  }
-  const u = state.updates || {};
-  const versions = {};
-  for (const l of state.laptops) if (l.agent_version) versions[l.agent_version] = (versions[l.agent_version] || 0) + 1;
-  const auto = el("input", { type: "checkbox", checked: !!u.auto });
-  auto.onchange = () => saveSettings({ auto_update: auto.checked }, auto.checked ? "Автообновление включено" : "Автообновление выключено");
-  const check = el("button", { className: "btn", textContent: "Проверить обновления" });
-  check.onclick = async () => {
-    check.disabled = true; check.textContent = "проверяю…";
-    try { const r = await api("POST", "/ui/api/updates/check"); toast(r.latest ? `Последняя версия агента: ${r.latest}` : "Обновлений не найдено", "ok"); }
-    catch (e) { toast(e.message, "error"); }
-    check.disabled = false; check.textContent = "Проверить обновления";
-  };
-  const push = el("button", { className: "btn primary", textContent: "Обновить ноутбуки сейчас" });
-  push.onclick = async () => {
-    push.disabled = true;
-    try {
-      const r = await api("POST", "/ui/api/updates/push", { targets: "all" });
-      const res = Object.entries(r.results);
-      toast(res.length ? res.map(([n, m]) => `${n}: ${m}`).join("; ") : "Все ноутбуки уже обновлены", "ok");
-    } catch (e) { toast(e.message, "error"); }
-    push.disabled = false;
-  };
-  const outdated = state.laptops.filter((l) => l.outdated).map((l) => l.number);
-  sec.innerHTML = "";
-  sec.append(el("h2", {}, "⟳ Обновления ноутбуков"),
-    el("p", {}, u.latest ? `Последняя версия агента: ${u.latest}` : "Новых версий пока не скачано.",
-      u.last_check ? el("span", { className: "muted small" }, ` (проверено в ${new Date(u.last_check * 1000).toLocaleTimeString("ru-RU")})`) : null),
-    u.error ? el("p", { className: "error" }, u.error) : null,
-    el("p", { className: "muted small" }, "На ноутбуках: " + (Object.entries(versions).map(([v, n]) => `версия ${v} — ${n} шт.`).join(", ") || "—") +
-      (outdated.length ? `. Ждут обновления: ${outdated.join(", ")}` : "")),
-    el("label", { className: "row" }, auto, el("span", {}, "Обновлять автоматически (только когда на ноутбуке нет заставки, сообщения, отсчёта и отправки файлов)")),
-    el("div", { className: "row" }, check, push),
-    el("p", { className: "muted small" }, "Устанавливаются только версии с цифровой подписью. Если новая версия не запустится, ноутбук сам вернёт прежнюю."));
-}
-
 // ================= Живые обновления =================
 function onState() {
   renderLaptops();
   renderRequests();
   renderMaterials();
-  renderSettingsBasics();
-  renderAppsEditor();
-  renderUpdates();
   for (const fn of stateListeners) { try { fn(state); } catch (e) { console.error(e); } }
 }
 

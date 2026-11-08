@@ -115,3 +115,14 @@ async def test_student_validation(teacher):
     assert r["added"] == 1 and len(r["errors"]) == 2
     status, _ = await ui(teacher, "POST", "/ui/api/groups", json={"name": "Г"})
     assert status == 400
+
+
+async def test_student_counts_and_files(teacher):
+    gid, _ = await add_group(teacher, "Пн", "Маша")
+    await receive(teacher, "1", "masha1.sb3", b"1")
+    await receive(teacher, "1", "masha2.sb3", b"2")
+    _, proj = await ui(teacher, "GET", "/ui/api/projects")
+    masha = proj["groups"][0]["students"][0]
+    assert masha["files_total"] == 2
+    _, r = await ui(teacher, "GET", f"/ui/api/students/{masha['id']}/files")
+    assert sorted(f["name"] for f in r["files"]) == ["masha1.sb3", "masha2.sb3"] and all(f["exists"] for f in r["files"])
