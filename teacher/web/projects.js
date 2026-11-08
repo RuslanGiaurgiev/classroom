@@ -288,9 +288,25 @@
       list, el("div", { className: "row" }, addF),
       el("div", { className: "row" }, el("span", {}, "Не отправлять файлы больше"), maxMb, el("span", {}, "МБ")),
       ignoreList(st),
+      materialsDest(st),
       el("div", { className: "row" }, el("span", {}, "Папка проектов на Mac:"), rootIn),
       el("p", { className: "muted small" }, "Пусто — Документы/Компьютерный класс."),
       el("div", { className: "row" }, el("div", { className: "spacer" }), save));
+  }
+
+  function materialsDest(st) {
+    const d = st.materials_dest || { base: "desktop", sub: "Материалы" };
+    const base = el("select", {});
+    for (const [k, t] of Object.entries(BASES)) base.append(el("option", { value: k }, t));
+    base.value = d.base;
+    const sub = el("input", { type: "text", value: d.sub, placeholder: "например, Материалы" });
+    const save = el("button", { className: "btn small", textContent: "Сохранить" });
+    save.onclick = async () => {
+      try { await api("PUT", "/ui/api/settings", { materials_dest: { base: base.value, sub: sub.value } }); log("Папка материалов сохранена"); folderDraft = null; }
+      catch (e) { alert(e.message); }
+    };
+    return el("div", {}, el("div", { className: "row" }, el("b", {}, "Материалы урока на ноутбуках:"), base, el("span", {}, "\\"), sub, save),
+      el("p", { className: "muted small" }, "Эта папка не собирается как проекты и не очищается «Концом урока»."));
   }
 
   function ignoreList(st) {

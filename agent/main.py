@@ -164,6 +164,7 @@ def main(argv: list[str] | None = None, platform: Platform | None = None) -> int
 
     core = AgentCore(platform)
     core.collector = Collector(platform)
+    core.collector.excluded_roots = core.materials_roots
     client = AgentClient(platform, state, core=core)
     try:
         asyncio.run(client.run())

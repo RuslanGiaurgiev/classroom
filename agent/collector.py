@@ -94,6 +94,8 @@ class Collector:
         self._last_pending_sent: int | None = None
         self._folders_cache: dict[str, Path] | None = None
         self._noisy_logged: set[str] = set()
+        # Папки, которые никогда не собираем и не очищаем (материалы урока от учителя)
+        self.excluded_roots = lambda: []
 
     # ================= Настройки =================
 
@@ -223,8 +225,16 @@ class Collector:
             self.tracker.observe(path, st.st_size, st.st_mtime_ns)
             self._wake.set()
 
+    def _is_excluded(self, path: Path) -> bool:
+        for ex in self.excluded_roots():
+            if path == ex or ex in path.parents:
+                return True
+        return False
+
     def _locate(self, path: Path) -> tuple[str, Path] | None:
         """В какой отслеживаемой папке лежит файл (самая глубокая подходящая)."""
+        if self._is_excluded(path):
+            return None
         best = None
         for key, root in self.folders().items():
             try:
@@ -244,7 +254,7 @@ class Collector:
             for dirpath, dirnames, filenames in os.walk(root):
                 d = Path(dirpath)
                 dirnames[:] = [n for n in dirnames if not n.startswith(".") and d / n not in nested
-                               and not self.platform.is_hidden(d / n)]
+                               and not self.platform.is_hidden(d / n) and not self._is_excluded(d / n)]
                 for name in filenames:
                     full = d / name
                     try:
@@ -479,6 +489,8 @@ class Collector:
             if root is None or not row.sha256:
                 continue
             path = root / row.rel_path
+            if self._is_excluded(path):
+                continue  # материалы урока никогда не удаляем
             if row.sha256 not in confirmed_by_teacher:
                 kept.append(f"{row.rel_path}: учитель не подтвердил")
                 continue

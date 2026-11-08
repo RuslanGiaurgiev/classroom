@@ -132,3 +132,13 @@ code { background: var(--bg); padding: 1px 5px; border-radius: 4px; font-size: 1
 .el-row b { min-width: 130px; }
 .el-row.warning, .el-row.error { color: var(--danger); }
 .el-row.done { color: var(--ok); }
+/* --- Материалы урока --- */
+.mat-pkg { border-top: 1px solid var(--border); padding-top: 8px; margin-top: 8px; }
+.mat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 6px; margin-top: 6px; }
+.mat-cell { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 6px; font-size: 12px;
+  border: 1px solid var(--border); border-radius: 6px; padding: 4px 6px; background: var(--bg); }
+.mat-cell .bar { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+.mat-cell .bar div { height: 100%; background: var(--accent); }
+.mat-cell.done .bar div { background: var(--ok); }
+.mat-cell.error { border-color: var(--danger); }
+.btn:disabled { opacity: .45; cursor: default; filter: none; }

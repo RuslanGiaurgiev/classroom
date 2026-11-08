@@ -46,6 +46,7 @@ from teacher.db import DB
 from teacher.endlesson import EndLesson
 from teacher.updates import UpdateManager
 from teacher.inbox import FileReceiver
+from teacher.materials import MaterialsManager
 from teacher.sorter import Sorter
 from teacher.yadisk import YandexDisk
 from teacher.netutil import is_loopback, primary_ipv4
@@ -108,6 +109,7 @@ class TeacherServer:
         self.sorter = Sorter(self)
         self.end_lesson = EndLesson(self)
         self.updates = UpdateManager(self)
+        self.materials = MaterialsManager(self)
         self.disk = YandexDisk(self, token_store=disk_token_store, **({"api_base": disk_api_base} if disk_api_base else {}))
         self.on_agent_connected.append(self._send_config)
         self.on_settings_changed.append(self._config_changed)
@@ -136,6 +138,7 @@ class TeacherServer:
         app.add_routes(self.disk.routes())
         app.add_routes(self.end_lesson.routes())
         app.add_routes(self.updates.routes())
+        app.add_routes(self.materials.routes())
         app.router.add_static("/ui/static/", WEB_DIR)
         return app
 
@@ -441,12 +444,13 @@ class TeacherServer:
             "teacher": {"ip": self.host_ip_fn(), "port": self.port, "teacher_id": self.storage.teacher_id},
             "settings": self.public_settings(),
             "updates": self.updates.public(),
+            "materials": self.materials.public(),
         }
 
     def public_settings(self) -> dict[str, Any]:
         st = self.storage.settings()
         keys = ("search_engine", "apps", "lesson_sets", "watch_folders", "max_file_mb", "active_group",
-                "name_threshold", "disk_root", "disk_client_id", "ignore_patterns")
+                "name_threshold", "disk_root", "disk_client_id", "ignore_patterns", "materials_dest")
         return {k: st.get(k) for k in keys} | {
             "search_engines": {k: v[0] for k, v in SEARCH_ENGINES.items()},
             "projects_root": str(self.projects_root()),
@@ -517,6 +521,21 @@ class TeacherServer:
             if not folders:
                 raise ValueError("Нужна хотя бы одна папка")
             out["watch_folders"] = folders
+        if "materials_dest" in body:
+            m = body["materials_dest"] or {}
+            sub = str(m.get("sub", "")).strip().strip("\\/")
+            if m.get("base") not in ("desktop", "documents", "downloads"):
+                raise ValueError("Папка материалов: «Рабочий стол», «Документы» или «Загрузки»")
+            if ".." in sub.replace("\\", "/").split("/") or ":" in sub:
+                raise ValueError("Некорректная папка материалов")
+            # Папка материалов не должна содержать отслеживаемые папки (иначе проекты перестанут собираться)
+            watched = out.get("watch_folders") or self.storage.settings()["watch_folders"]
+            ms = sub.replace("\\", "/").strip("/").lower()
+            for w in watched:
+                ws = w["sub"].replace("\\", "/").strip("/").lower()
+                if w["base"] == m["base"] and (ms == "" or ms == ws or ws.startswith(ms + "/")):
+                    raise ValueError("Папка материалов не может совпадать с папкой сбора проектов или содержать её")
+            out["materials_dest"] = {"base": m["base"], "sub": sub}
         if "auto_update" in body:
             out["auto_update"] = bool(body["auto_update"])
         if "ignore_patterns" in body:
@@ -562,7 +581,8 @@ class TeacherServer:
 
     def collect_config(self) -> dict:
         st = self.storage.settings()
-        return {"folders": st["watch_folders"], "max_file_mb": st["max_file_mb"], "ignore": st.get("ignore_patterns", [])}
+        return {"folders": st["watch_folders"], "max_file_mb": st["max_file_mb"], "ignore": st.get("ignore_patterns", []),
+                "materials": st.get("materials_dest") or {"base": "desktop", "sub": "Материалы"}}
 
     async def _send_config(self, conn: AgentConn) -> None:
         try:
@@ -571,7 +591,7 @@ class TeacherServer:
             pass
 
     async def _config_changed(self, updates: dict) -> None:
-        if {"watch_folders", "max_file_mb", "ignore_patterns"} & set(updates):
+        if {"watch_folders", "max_file_mb", "ignore_patterns", "materials_dest"} & set(updates):
             for conn in list(self.agents.values()):
                 await self._send_config(conn)
 

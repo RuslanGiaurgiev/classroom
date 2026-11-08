@@ -306,6 +306,81 @@ $("btnSaveApps").onclick = async () => {
 };
 $("setEngine").onchange = () => saveSettings({ search_engine: $("setEngine").value }, "Поисковая система сохранена");
 
+// ---------- Материалы урока ----------
+let matChosen = [];
+const fmtMB = (b) => (b >= 1073741824 ? (b / 1073741824).toFixed(1) + " ГБ" : b >= 1048576 ? (b / 1048576).toFixed(1) + " МБ" : Math.max(1, Math.round(b / 1024)) + " КБ");
+
+async function pickMaterials(kind) {
+  try {
+    const r = await api("POST", "/ui/api/materials/pick", { kind });
+    for (const it of r.items) if (!matChosen.some((x) => x.path === it.path)) matChosen.push(it);
+    renderMatChosen();
+  } catch (e) { log(e.message, true); }
+}
+$("btnPickFiles").onclick = () => pickMaterials("files");
+$("btnPickFolders").onclick = () => pickMaterials("folders");
+
+function renderMatChosen() {
+  const box = $("matChosen");
+  box.innerHTML = "";
+  for (const it of matChosen) {
+    const rm = el("button", { className: "btn small danger", textContent: "✕" });
+    rm.onclick = () => { matChosen = matChosen.filter((x) => x !== it); renderMatChosen(); };
+    box.append(el("div", { className: "file-row small" }, el("span", {}, it.is_dir ? "📁" : "📄"),
+      el("b", { className: "file-info" }, it.name), el("span", { className: "muted" }, fmtMB(it.size)), rm));
+  }
+  if (matChosen.length) {
+    const total = matChosen.reduce((a, x) => a + x.size, 0);
+    box.append(el("div", { className: "muted small" }, `Всего: ${fmtMB(total)}`));
+  }
+  $("btnSendMaterials").disabled = !matChosen.length;
+}
+
+$("btnSendMaterials").onclick = async () => {
+  const t = targets();
+  if (Array.isArray(t) && !t.length) { log("Выберите ноутбуки или переключите «Кому: всем»", true); return; }
+  const btn = $("btnSendMaterials");
+  btn.disabled = true; btn.textContent = "готовлю…";
+  try {
+    const r = await api("POST", "/ui/api/materials/send", { paths: matChosen.map((x) => x.path), targets: t });
+    log(`Материалы «${r.name}» (${r.count} файл., ${fmtMB(r.total_size)}) отправлены ${targetTitle()}`);
+    matChosen = [];
+    renderMatChosen();
+  } catch (e) { log(e.message, true); }
+  btn.textContent = "Отправить";
+  btn.disabled = !matChosen.length;
+};
+
+const MAT_ICONS = { pending: "⏸", sent: "⏳", downloading: "⬇️", done: "✅", error: "❌" };
+function renderMaterials(packages) {
+  const box = $("matPackages");
+  box.innerHTML = "";
+  for (const p of (packages || []).slice(0, 5)) {
+    const nums = Object.keys(p.targets).sort((a, b) => Number(a) - Number(b));
+    const done = nums.filter((n) => p.targets[n].state === "done").length;
+    const notDone = nums.filter((n) => p.targets[n].state !== "done");
+    const again = el("button", { className: "btn small", textContent: "Отправить ещё раз",
+      title: "Тем, кто ещё не получил" });
+    again.onclick = () => api("POST", `/ui/api/materials/${p.id}/resend`, {}).then(() => log(`«${p.name}»: отправлено повторно`)).catch((e) => log(e.message, true));
+    const head = el("div", { className: "row" }, el("b", {}, p.state === "preparing" ? `⌛ ${p.name} — подготовка…` : p.name),
+      el("span", { className: "muted small" }, `${p.count} файл., ${fmtMB(p.total_size)} · получили ${done} из ${nums.length}`),
+      el("div", { className: "spacer" }), notDone.length ? again : null);
+    const grid = el("div", { className: "mat-grid" });
+    for (const n of nums) {
+      const t = p.targets[n];
+      const pct = p.total_size ? Math.min(100, Math.round((t.done || 0) * 100 / p.total_size)) : 100;
+      grid.append(el("div", { className: "mat-cell " + t.state, title: t.message || "" },
+        el("span", {}, `${MAT_ICONS[t.state] || ""} ${n}`),
+        el("div", { className: "bar" }, el("div", { style: `width:${t.state === "done" ? 100 : pct}%` })),
+        el("span", { className: "muted small" }, t.state === "downloading" ? `${pct}%` : t.state === "error" ? "ошибка" : t.state === "pending" ? "не в сети" : "")));
+    }
+    box.append(el("div", { className: "mat-pkg" }, head, grid));
+  }
+  const d = (state.settings || {}).materials_dest || { base: "desktop", sub: "Материалы" };
+  const baseName = { desktop: "Рабочий стол", documents: "Документы", downloads: "Загрузки" }[d.base] || d.base;
+  $("matDest").textContent = `→ на ноутбуках: ${baseName}${d.sub ? "\\" + d.sub : ""}`;
+}
+
 // ---------- Обновления ноутбуков (Настройки) ----------
 function renderUpdates() {
   let sec = $("updatesSettings");
@@ -367,7 +442,8 @@ function connect() {
   };
   ws.onmessage = (ev) => {
     const m = JSON.parse(ev.data);
-    if (m.kind === "state") { state = m; onState(); }
+    if (m.kind === "state") { state = m; onState(); renderMaterials(m.materials); }
+    else if (m.kind === "materials") { state.materials = m.packages; renderMaterials(m.packages); }
     else if (m.kind === "result") {
       log(`Ноутбук ${m.number}: ${m.ok ? "" : "ошибка — "}${m.message || "выполнено"}`, !m.ok);
     } else if (m.kind === "log") {

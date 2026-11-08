@@ -69,6 +69,7 @@ class Action(str, Enum):
     COLLECT_NOW = "collect_now"          # собрать файлы прямо сейчас
     CLEANUP = "cleanup"                  # «Конец урока»: убрать в корзину только подтверждённые файлы
     UPDATE_AGENT = "update_agent"        # обновиться до версии (файл берётся у учителя, проверяется подпись)
+    RECEIVE_FILES = "receive_files"      # скачать у учителя пакет материалов урока
 
 
 # Процессы, которые нельзя закрывать ни при каких настройках
@@ -251,6 +252,12 @@ def validate_command(action: str, params: dict[str, Any]) -> tuple[Action, dict[
                 raise ProtocolError("Некорректный SHA-256 в списке")
             clean.append(h)
         return act, {"confirmed_sha256": clean}
+
+    if act is Action.RECEIVE_FILES:
+        pid = params.get("package_id")
+        if not isinstance(pid, str) or not re.fullmatch(r"[0-9a-f]{32}", pid):
+            raise ProtocolError("Некорректный пакет")
+        return act, {"package_id": pid, "name": _text(params, "name", 120, "Материалы")}
 
     if act is Action.UPDATE_AGENT:
         v = params.get("version")

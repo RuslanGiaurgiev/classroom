@@ -133,8 +133,10 @@ class AgentCore:
         self.overlay = OverlaySupervisor(platform)
         self.shutdown = ShutdownController(platform, self.overlay, before_shutdown=self._flush_files)
         self.collector = None  # сбор файлов (agent/collector.py), подключается в main
+        from agent.materials import MaterialsReceiver
         from agent.updater import Updater
         self.updater = Updater(platform, self)
+        self.materials = MaterialsReceiver(platform, self)
         self.client = None     # AgentClient — задаётся клиентом
 
     def start_background(self) -> list[asyncio.Task]:
@@ -149,8 +151,16 @@ class AgentCore:
             self.collector.wake()
 
     def apply_config(self, config: dict) -> None:
+        self.materials.set_dest(config.get("materials"))
         if self.collector is not None:
+            self.collector.excluded_roots = self.materials_roots
             self.collector.apply_config(config)
+
+    def materials_roots(self) -> list:
+        try:
+            return [self.materials.root()]
+        except OSError:
+            return []
 
     def busy_reason(self) -> str | None:
         """Почему сейчас нельзя перезапускать агент (для обновления)."""
@@ -162,6 +172,8 @@ class AgentCore:
             return "запланировано выключение"
         if self.collector is not None and self.collector.is_uploading():
             return "отправляются файлы"
+        if any(not t.done() for t in self.materials._tasks.values()):
+            return "загружаются материалы урока"
         return None
 
     def status(self) -> dict:
@@ -217,6 +229,8 @@ class AgentCore:
             r = await self.collector.cleanup(set(params["confirmed_sha256"]))
             text = f"убрано в корзину {r['moved']}" + (f", оставлено {len(r['kept'])}" if r["kept"] else "")
             return {"text": text, **r}
+        if action is Action.RECEIVE_FILES:
+            return self.materials.start(params["package_id"], params["name"])
         if action is Action.UPDATE_AGENT:
             from shared.update import UpdateError
             try:
