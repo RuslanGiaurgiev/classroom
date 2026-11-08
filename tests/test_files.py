@@ -127,7 +127,7 @@ async def test_new_file_collected_and_confirmed(teacher, tmp_path):
     await wait_for(lambda: teacher.db.find_received("1", hashlib.sha256(data).hexdigest()), timeout=10)
     row = teacher.db.find_received("1", hashlib.sha256(data).hexdigest())
     assert Path(row["inbox_path"]).read_bytes() == data
-    assert "/Входящие/" in row["inbox_path"] and "/Ноут-1/" in row["inbox_path"]
+    assert "/Входящие/" in row["inbox_path"].replace("\\", "/") and "/Ноут-1/" in row["inbox_path"].replace("\\", "/")
     assert core.collector.ledger.pending_count() == 0
     # Старый файл не отправлялся
     assert len(teacher.db.q("SELECT * FROM received")) == 1

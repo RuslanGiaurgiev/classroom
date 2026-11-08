@@ -76,15 +76,15 @@ async def test_sort_into_student_folder_and_unsorted(teacher):
 
     f = await receive(teacher, "1", "Masha_kot.sb3", b"1")
     assert f["status"] == "sorted"
-    assert f["project_path"].endswith("Проекты/Пн 10.00/Маша/2026-11-08/Masha_kot.sb3")
+    assert f["project_path"].replace("\\", "/").endswith("Проекты/Пн 10.00/Маша/2026-11-08/Masha_kot.sb3")
     assert Path(f["project_path"]).read_bytes() == b"1" and Path(f["inbox_path"]).exists()   # архив на месте
 
     # Тот же файл с тем же именем от другого ноутбука — суффикс, без перезаписи
     f2 = await receive(teacher, "2", "Masha_kot.sb3", b"2")
-    assert f2["project_path"].endswith("Masha_kot (2).sb3")
+    assert f2["project_path"].replace("\\", "/").endswith("Masha_kot (2).sb3")
 
     u = await receive(teacher, "3", "Маша и Миша.sb3", b"3")
-    assert u["status"] == "unsorted" and "/Неразобранное/2026-11-08/" in u["project_path"]
+    assert u["status"] == "unsorted" and "/Неразобранное/2026-11-08/" in u["project_path"].replace("\\", "/")
     u2 = await receive(teacher, "3", "Mashunya.sb3", b"4")
     assert u2["status"] == "unsorted"
 
@@ -93,12 +93,12 @@ async def test_sort_into_student_folder_and_unsorted(teacher):
     status, res = await ui(teacher, "POST", f"/ui/api/files/{u2['id']}/assign", json={"student_id": masha["id"]})
     assert status == 200 and res["suggest_alias"] == "машуня"
     moved = teacher.db.one("SELECT * FROM received WHERE id=?", (u2["id"],))
-    assert moved["status"] == "sorted" and "/Маша/" in moved["project_path"] and Path(moved["project_path"]).exists()
+    assert moved["status"] == "sorted" and "/Маша/" in moved["project_path"].replace("\\", "/") and Path(moved["project_path"]).exists()
     assert not (teacher.projects_root() / "Неразобранное" / "2026-11-08" / "Mashunya.sb3").exists()
 
     await ui(teacher, "PUT", f"/ui/api/students/{masha['id']}", json={"aliases": masha["aliases"] + ["машуня"]})
     f3 = await receive(teacher, "1", "mashunya_2.sb3", b"5")
-    assert f3["status"] == "sorted" and "/Маша/" in f3["project_path"]
+    assert f3["status"] == "sorted" and "/Маша/" in f3["project_path"].replace("\\", "/")
 
 
 async def test_active_group_limits_matching(teacher):
@@ -107,7 +107,7 @@ async def test_active_group_limits_matching(teacher):
     assert (await receive(teacher, "1", "masha.sb3", b"a"))["status"] == "unsorted"   # две Маши
     await ui(teacher, "PUT", "/ui/api/settings", json={"active_group": g2})
     f = await receive(teacher, "1", "masha2.sb3", b"b")
-    assert f["status"] == "sorted" and "/Группа Б/Маша/" in f["project_path"]
+    assert f["status"] == "sorted" and "/Группа Б/Маша/" in f["project_path"].replace("\\", "/")
 
 
 async def test_student_validation(teacher):

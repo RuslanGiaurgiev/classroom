@@ -19,7 +19,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements-teacher.txt -r requirements-dev.txt
-      - run: python -m pytest -v
+      - run: python -m pytest -v --junitxml=report.xml || (python tools/ci_annotate.py report.xml; exit 1)
 
   build-windows:
     name: Тесты и сборка agent.exe (Windows)
@@ -31,7 +31,8 @@ jobs:
           python-version: "3.12"
       - run: pip install -r requirements-dev.txt pyinstaller==6.15.0
       - name: Тесты (включая DPAPI, Known Folders, mutex, автозапуск)
-        run: python -m pytest -v
+        shell: bash
+        run: python -m pytest -v --junitxml=report.xml || (python tools/ci_annotate.py report.xml; exit 1)
       - name: Сборка agent.exe
         run: >
           pyinstaller --onefile --noconsole --clean --name agent
