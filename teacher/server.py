@@ -41,6 +41,8 @@ from shared.protocol import (
     validate_process_name,
 )
 from shared.search import SEARCH_ENGINES, to_url
+from teacher.db import DB
+from teacher.inbox import FileReceiver
 from teacher.netutil import is_loopback, primary_ipv4
 from teacher.pairing import PairRequestManager
 from teacher.udp_discovery import start_responder
@@ -92,6 +94,10 @@ class TeacherServer:
         self.on_agent_connected: list = []
         self.on_agent_report: list = []
         self.on_settings_changed: list = []
+        self.db = DB(storage.data_dir / "teacher.sqlite3")
+        self.files = FileReceiver(self)
+        self.on_agent_connected.append(self._send_config)
+        self.on_settings_changed.append(self._config_changed)
 
     # ================= Запуск / остановка =================
 
@@ -111,6 +117,7 @@ class TeacherServer:
             web.put("/ui/api/settings", self.handle_ui_settings),
             web.get("/ui/ws", self.handle_ui_ws),
         ])
+        app.add_routes(self.files.routes())
         app.router.add_static("/ui/static/", WEB_DIR)
         return app
 
@@ -376,8 +383,9 @@ class TeacherServer:
 
     def public_settings(self) -> dict[str, Any]:
         st = self.storage.settings()
-        return {k: st.get(k) for k in ("search_engine", "apps", "lesson_sets")} | {
+        return {k: st.get(k) for k in ("search_engine", "apps", "lesson_sets", "watch_folders", "max_file_mb")} | {
             "search_engines": {k: v[0] for k, v in SEARCH_ENGINES.items()},
+            "projects_root": str(self.projects_root()),
         }
 
     async def handle_ui_settings(self, request: web.Request) -> web.Response:
@@ -419,8 +427,51 @@ class TeacherServer:
         return web.json_response({"ok": True})
 
     async def validate_extra_settings(self, body: dict) -> dict:
-        """Переопределяется/дополняется на следующих этапах."""
-        return {}
+        """Настройки сбора файлов и папки проектов."""
+        out: dict[str, Any] = {}
+        if "watch_folders" in body:
+            folders = []
+            for f in body["watch_folders"][:10]:
+                base = f.get("base")
+                sub = str(f.get("sub", "")).strip().strip("\\/")
+                if base not in ("downloads", "desktop", "documents"):
+                    raise ValueError("Папка должна начинаться с «Загрузки», «Рабочий стол» или «Документы»")
+                if ".." in sub.replace("\\", "/").split("/") or ":" in sub:
+                    raise ValueError(f"Некорректная папка: {sub}")
+                folders.append({"base": base, "sub": sub})
+            if not folders:
+                raise ValueError("Нужна хотя бы одна папка")
+            out["watch_folders"] = folders
+        if "max_file_mb" in body:
+            mb = body["max_file_mb"]
+            if not isinstance(mb, int) or not 1 <= mb <= 4096:
+                raise ValueError("Лимит размера: от 1 до 4096 МБ")
+            out["max_file_mb"] = mb
+        if "projects_root" in body:
+            root = str(body["projects_root"]).strip()
+            if root and not Path(root).expanduser().is_absolute():
+                raise ValueError("Папка проектов: нужен полный путь")
+            out["projects_root"] = root
+        return out
+
+    def projects_root(self) -> Path:
+        root = self.storage.settings().get("projects_root") or ""
+        return Path(root).expanduser() if root else Path.home() / "Documents" / "Компьютерный класс"
+
+    def collect_config(self) -> dict:
+        st = self.storage.settings()
+        return {"folders": st["watch_folders"], "max_file_mb": st["max_file_mb"]}
+
+    async def _send_config(self, conn: AgentConn) -> None:
+        try:
+            await conn.ws.send_str(Message(MsgType.CONFIG, self.collect_config()).to_json())
+        except ConnectionError:
+            pass
+
+    async def _config_changed(self, updates: dict) -> None:
+        if "watch_folders" in updates or "max_file_mb" in updates:
+            for conn in list(self.agents.values()):
+                await self._send_config(conn)
 
     async def handle_ui_state(self, request: web.Request) -> web.Response:
         return web.json_response(self.state_snapshot())

@@ -65,6 +65,8 @@ class AgentClient:
         self.backoff = backoff or Backoff()
         self.core = core or AgentCore(platform)
         self.core.client = self  # ядру (сбору файлов) нужен адрес учителя и способ слать статусы
+        if self.core.collector is not None:
+            self.core.collector.client = self
         self.base_url: str | None = None  # http://ip:порт учителя, пока есть связь
         self.connected = asyncio.Event()
         self.unpaired = False   # учитель отвязал ноутбук — работать дальше нет смысла
@@ -225,8 +227,12 @@ class AgentClient:
         try:
             # Повторная проверка на стороне агента: выполняем только разрешённое
             action, params = validate_command(str(msg.payload.get("action", "")), msg.payload.get("params") or {})
-            text = await self._execute(action, params)
-            result = {"command_id": command_id, "ok": True, "message": text}
+            out = await self._execute(action, params)
+            if isinstance(out, dict):
+                result = {"command_id": command_id, "ok": True, "message": out.get("text", ""),
+                          "data": {k: v for k, v in out.items() if k != "text"}}
+            else:
+                result = {"command_id": command_id, "ok": True, "message": out}
         except ProtocolError as e:
             log.warning("Отклонена команда: %s", e)
             result = {"command_id": command_id, "ok": False, "message": str(e)}
@@ -237,6 +243,6 @@ class AgentClient:
             await ws.send_str(Message(MsgType.RESULT, result).to_json())
         await self.send_status()
 
-    async def _execute(self, action: Action, params: dict) -> str:
+    async def _execute(self, action: Action, params: dict) -> str | dict:
         return await self.core.execute(action, params)
 

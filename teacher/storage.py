@@ -34,6 +34,11 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     ],
     # Наборы вкладок урока: {"id", "name", "items": [адреса или запросы], "browser"}
     "lesson_sets": [],
+    # Сбор проектов: какие папки на ноутбуках отслеживать и лимит размера файла
+    "watch_folders": [{"base": "downloads", "sub": ""}, {"base": "desktop", "sub": "Проекты"}],
+    "max_file_mb": 500,
+    # Куда складывать проекты на Mac ("" — ~/Documents/Компьютерный класс)
+    "projects_root": "",
 }
 
 

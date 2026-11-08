@@ -162,7 +162,8 @@ class AgentCore:
         if self.collector is not None:
             await self.collector.flush()
 
-    async def execute(self, action: Action, params: dict) -> str:
+    async def execute(self, action: Action, params: dict) -> str | dict:
+        """Выполнить команду. Результат — текст для журнала или словарь {"text": ..., данные}."""
         p = self.platform
         if action is Action.OPEN_URLS:
             return await asyncio.to_thread(p.open_urls, params["urls"], params["browser"])
@@ -190,9 +191,15 @@ class AgentCore:
         if action is Action.COLLECT_NOW:
             if self.collector is None:
                 return "сбор файлов не настроен"
-            return await self.collector.collect_now()
+            r = await self.collector.collect_now()
+            text = f"отправлено {r['sent']}, ждут отправки {r['pending']}"
+            if r["not_ready"]:
+                text += f", ещё не готовы: {', '.join(r['not_ready'][:5])}"
+            return {"text": text, **r}
         if action is Action.CLEANUP:
             if self.collector is None:
                 raise ProtocolError("сбор файлов не настроен")
-            return await self.collector.cleanup(set(params["confirmed_sha256"]))
+            r = await self.collector.cleanup(set(params["confirmed_sha256"]))
+            text = f"убрано в корзину {r['moved']}" + (f", оставлено {len(r['kept'])}" if r["kept"] else "")
+            return {"text": text, **r}
         raise ProtocolError(f"Действие не поддерживается: {action}")

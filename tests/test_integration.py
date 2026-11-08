@@ -30,7 +30,9 @@ async def wait_for(cond, timeout=5.0):
 
 @pytest.fixture
 async def teacher(tmp_path):
-    server = TeacherServer(Storage(tmp_path / "teacher"), host_ip_fn=lambda: "127.0.0.1")
+    storage = Storage(tmp_path / "teacher")
+    storage.update_settings(projects_root=str(tmp_path / "projects"))
+    server = TeacherServer(storage, host_ip_fn=lambda: "127.0.0.1")
     await server.start("127.0.0.1", 0)
     yield server
     await server.stop()
@@ -59,11 +61,11 @@ async def pair(server, platform, number):
     return state
 
 
-async def start_agent(server, tmp_path, number="1", **platform_kw):
+async def start_agent(server, tmp_path, number="1", core=None, platform=None, **platform_kw):
     platform_kw.setdefault("hostname", f"PC-{number}")
-    platform = FakePlatform(tmp_path / f"agent-{number}", **platform_kw)
+    platform = platform or FakePlatform(tmp_path / f"agent-{number}", **platform_kw)
     state = await pair(server, platform, number)
-    client = AgentClient(platform, state, use_mdns=False, backoff=Backoff(initial=0.05, maximum=0.2))
+    client = AgentClient(platform, state, use_mdns=False, backoff=Backoff(initial=0.05, maximum=0.2), core=core)
     task = asyncio.create_task(client.run())
     await asyncio.wait_for(client.connected.wait(), 5)
     return platform, client, task

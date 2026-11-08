@@ -21,6 +21,8 @@ from pathlib import Path
 
 from agent import __version__
 from agent.client import AgentClient
+from agent.collector import Collector
+from agent.core import AgentCore
 from agent.pairing import PairingFlow
 from agent.platform import get_platform
 from agent.platform.base import Platform
@@ -106,7 +108,13 @@ def main(argv: list[str] | None = None, platform: Platform | None = None) -> int
         install(platform)
         AgentState.path(platform).with_name("installed").touch()
 
-    client = AgentClient(platform, state)
+    # Убираем управляющие файлы полноэкранных окон, оставшиеся от прошлого запуска
+    for f in (platform.data_dir() / "overlay").glob("*.active"):
+        f.unlink(missing_ok=True)
+
+    core = AgentCore(platform)
+    core.collector = Collector(platform)
+    client = AgentClient(platform, state, core=core)
     try:
         asyncio.run(client.run())
     except KeyboardInterrupt:

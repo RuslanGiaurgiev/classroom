@@ -23,6 +23,8 @@ from pathlib import Path
 import aiohttp
 
 from agent.client import AgentClient, Backoff
+from agent.collector import Collector
+from agent.core import AgentCore
 from agent.pairing import PairingCancelled, PairingFlow
 from agent.platform.fake import FakePlatform
 from agent.state import AgentState
@@ -82,7 +84,9 @@ async def run_laptop(number: str, root: Path, teacher_url: str, ui_token: str, p
                 if approver:
                     approver.cancel()
             print(f"Ноутбук {number}: подключён")
-        client = AgentClient(platform, state, use_mdns=use_mdns, backoff=Backoff(maximum=10))
+        core = AgentCore(platform)
+        core.collector = Collector(platform)
+        client = AgentClient(platform, state, use_mdns=use_mdns, backoff=Backoff(maximum=10), core=core)
         await client.run()
         if client.unpaired:
             print(f"Ноутбук {number}: учитель отвязал ноутбук — снова прошу подключения")
@@ -98,6 +102,7 @@ async def amain(args) -> None:
     root = Path(args.data_dir).expanduser()
     numbers = [str(args.start + i) for i in range(args.count)]
     print(f"Фейковые ноутбуки: {', '.join(numbers)}. Данные: {root}. Ctrl+C — выход.")
+    print(f"Чтобы «скачать» файл на ноутбук 1, положите его в {root / 'laptop-1' / 'home' / 'Downloads'}")
     if args.manual:
         print("Режим --manual: нажимайте «Принять» в панели учителя.")
     await asyncio.gather(*(run_laptop(n, root, teacher_url, ui_token, storage.port, not args.no_mdns, args.manual)
