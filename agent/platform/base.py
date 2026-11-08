@@ -74,6 +74,10 @@ class Platform(ABC):
     def spawn_agent(self, exe_path: Path, args: list[str]) -> OverlayHandle:
         """Запустить новую версию агента отдельным процессом (не дочерним для текущего)."""
 
+    def describe_agent_processes(self) -> str:
+        """Для диагностики: какие процессы агента запущены и откуда."""
+        return ""
+
     @abstractmethod
     def install_autorun(self, exe_path: Path) -> None:
         """Прописать автозапуск при входе пользователя (HKCU\\...\\Run)."""

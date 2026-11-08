@@ -198,3 +198,38 @@ async def test_update_works_when_old_file_is_locked(teacher, tmp_path, monkeypat
     assert not list(target.parent.glob("agent-old*.exe"))
     await stop_agent(client, task)
     await runner.cleanup()
+
+
+def test_old_copy_does_not_downgrade_installed(tmp_path, monkeypatch):
+    """Случай с ноутбука 12: запуск старого agent.exe из «Загрузок» не должен откатывать установленную версию."""
+    import sys
+
+    import agent.main as am
+    from agent.platform.fake import FakePlatform
+    from agent.updater import installed_exe_path, write_installed_version
+
+    platform = FakePlatform(tmp_path / "pc")
+    target = installed_exe_path(platform)
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"INSTALLED 0.4.2")
+    downloads_exe = tmp_path / "Downloads" / "agent.exe"
+    downloads_exe.parent.mkdir()
+    downloads_exe.write_bytes(b"OLD 0.3.0")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(downloads_exe))
+
+    # Установлена более новая версия → старая копия запускает её, а не копирует себя
+    write_installed_version(platform, "9.0.0")
+    assert am.newer_installed_elsewhere(platform) == target
+    # Установлена та же версия → тоже запускаем установленную
+    write_installed_version(platform, am.__version__)
+    assert am.newer_installed_elsewhere(platform) == target
+    # Установлена более старая → новая копия обновляет установку
+    write_installed_version(platform, "0.0.1")
+    assert am.newer_installed_elsewhere(platform) is None
+    am.install(platform)
+    assert target.read_bytes() == b"OLD 0.3.0" and am.installed_version(platform) == am.__version__
+    # Нет файла VERSION (установлено старой версией) — спрашиваем сам exe
+    (target.parent / "VERSION").unlink()
+    monkeypatch.setattr(am, "_selftest_version", lambda exe: "9.9.9")
+    assert am.newer_installed_elsewhere(platform) == target

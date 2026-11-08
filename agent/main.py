@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import asyncio
 import logging
 import shutil
@@ -24,7 +25,14 @@ from agent.client import AgentClient
 from agent.collector import Collector
 from agent.core import AgentCore
 from agent.pairing import PairingFlow
-from agent.updater import after_update_started, cleanup_after_update, installed_exe_path
+from agent.updater import (
+    after_update_started,
+    cleanup_after_update,
+    installed_exe_path,
+    installed_version,
+    write_installed_version,
+)
+from shared.update import is_newer
 from agent.platform import get_platform
 from agent.platform.base import Platform
 from agent.state import AgentState
@@ -44,10 +52,27 @@ def setup_logging(platform: Platform) -> None:
         root.addHandler(logging.StreamHandler())
 
 
+def _selftest_version(exe: Path) -> str | None:
+    """Спросить у exe его версию (для установок без файла VERSION)."""
+    import subprocess
+    import tempfile
+    out = Path(tempfile.gettempdir()) / f"agent-version-{os.getpid()}.txt"
+    try:
+        subprocess.run([str(exe), "--selftest", str(out)], timeout=60,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        text = out.read_text(encoding="utf-8")
+        return text.split()[1] if text.startswith("ok ") else None
+    except (OSError, subprocess.SubprocessError, IndexError):
+        return None
+    finally:
+        out.unlink(missing_ok=True)
+
+
 def install(platform: Platform) -> Path | None:
     """
     Копируем agent.exe в постоянное место (чтобы его не удалили вместе с «Загрузками»)
     и прописываем автозапуск. Работает только для собранного .exe.
+    Старая копия НИКОГДА не заменяет установленную более новую версию.
     """
     if not getattr(sys, "frozen", False):
         log.info("Запуск из исходников — автозапуск не устанавливаем")
@@ -58,12 +83,31 @@ def install(platform: Platform) -> Path | None:
         target.parent.mkdir(parents=True, exist_ok=True)
         try:
             shutil.copy2(current, target)
+            write_installed_version(platform, __version__)
         except PermissionError:
-            # Старая версия ещё запущена и держит файл — автозапуск будет на текущий файл
+            # Файл занят — автозапуск будет на текущий файл
             log.warning("Не удалось заменить %s (файл занят), автозапуск на %s", target, current)
             target = current
+    else:
+        write_installed_version(platform, __version__)
     platform.install_autorun(target)
     return target
+
+
+def newer_installed_elsewhere(platform: Platform) -> Path | None:
+    """
+    Запустили agent.exe не из постоянного места (например, старую копию из «Загрузок»),
+    а установлена такая же или более новая версия — вернуть путь к установленной.
+    """
+    if not getattr(sys, "frozen", False):
+        return None
+    target = installed_exe_path(platform)
+    if Path(sys.executable).resolve() == target.resolve() or not target.exists():
+        return None
+    v = installed_version(platform, run_selftest=_selftest_version)
+    if v and not is_newer(__version__, v):
+        return target
+    return None
 
 
 def selftest(out_file: str) -> int:
@@ -143,6 +187,14 @@ def main(argv: list[str] | None = None, platform: Platform | None = None) -> int
         if state is None:
             log.info("Подключение отменено")
             return 1
+
+    # Запустили старую копию, а установлена такая же или новее — запускаем установленную и выходим
+    newer = None if args.after_update else newer_installed_elsewhere(platform)
+    if newer is not None:
+        log.info("Установлена более новая или такая же версия (%s) — запускаю её, эта копия завершается", newer)
+        platform.release_single_instance()
+        platform.spawn_agent(newer, [])
+        return 0
 
     # Запустили agent.exe не из постоянного места (например, новую версию из «Загрузок») —
     # обновляем постоянную копию, чтобы автозапуск стартовал именно её

@@ -32,7 +32,7 @@ import aiohttp
 
 from agent import __version__
 from agent.platform.base import Platform
-from shared.update import UpdateError, is_newer, verify_manifest
+from shared.update import UpdateError, is_newer, parse_version, verify_manifest
 
 if TYPE_CHECKING:
     from agent.core import AgentCore
@@ -44,6 +44,36 @@ READY_TIMEOUT = 30.0
 
 def installed_exe_path(platform: Platform) -> Path:
     return platform.data_dir() / "bin" / "agent.exe"
+
+
+def version_file(platform: Platform) -> Path:
+    return installed_exe_path(platform).with_name("VERSION")
+
+
+def write_installed_version(platform: Platform, version: str) -> None:
+    try:
+        version_file(platform).write_text(version, encoding="utf-8")
+    except OSError:
+        log.exception("Не удалось записать VERSION")
+
+
+def installed_version(platform: Platform, run_selftest=None) -> str | None:
+    """
+    Какая версия установлена в bin\agent.exe. Берём из файла VERSION, а если его нет
+    (установлено старой версией) — спрашиваем сам exe через --selftest.
+    """
+    exe = installed_exe_path(platform)
+    if not exe.exists():
+        return None
+    try:
+        v = version_file(platform).read_text(encoding="utf-8").strip()
+        parse_version(v)
+        return v
+    except (OSError, UpdateError):
+        pass
+    if run_selftest is None:
+        return None
+    return run_selftest(exe)
 
 
 def move_aside(path: Path) -> None:
@@ -152,11 +182,13 @@ class Updater:
             if target.exists():
                 os.replace(target, old)          # работающий exe переименовывать можно
             shutil.copy2(new_exe, target)
+            write_installed_version(self.platform, version)
         except OSError as e:
             log.exception("Не удалось подменить файл агента")
             if old.exists() and not target.exists():
                 os.replace(old, target)
-            self._failed(f"не удалось заменить файл: {e}", loop)
+            who = self.platform.describe_agent_processes()
+            self._failed(f"не удалось заменить файл: {e}" + (f". Запущены: {who}" if who else ""), loop)
             return
 
         self.platform.install_autorun(target)
@@ -189,6 +221,7 @@ class Updater:
             os.replace(target, bad)
             if old.exists():
                 os.replace(old, target)
+            write_installed_version(self.platform, self.current_version)
             self.platform.install_autorun(target)
         except OSError:
             log.exception("Ошибка отката файлов")

@@ -263,6 +263,16 @@ class WindowsPlatform(Platform):
         except OSError:
             return subprocess.Popen([str(exe_path), *args], close_fds=True, creationflags=base)
 
+    def describe_agent_processes(self) -> str:
+        script = ("Get-CimInstance Win32_Process -Filter \"Name like 'agent%'\" | "
+                  "ForEach-Object { \"$($_.ProcessId): $($_.ExecutablePath)\" }")
+        try:
+            r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                               capture_output=True, text=True, timeout=20, creationflags=CREATE_NO_WINDOW)
+            return "; ".join(line.strip() for line in r.stdout.splitlines() if line.strip())[:500]
+        except (OSError, subprocess.SubprocessError):
+            return ""
+
     def install_autorun(self, exe_path: Path) -> None:
         with winreg.CreateKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as k:
             winreg.SetValueEx(k, APP_NAME, 0, winreg.REG_SZ, f'"{exe_path}"')
