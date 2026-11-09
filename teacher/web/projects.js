@@ -78,13 +78,103 @@
   $("groupPick").onclick = groupPickDialog;
 
   // ---------- Импорт групп и учеников из папки ----------
+  // ---------- ⬇ Импорт: папка на Mac или ссылка на Яндекс Диск ----------
   async function importDialog() {
+    const link = el("input", { type: "text", placeholder: "https://disk.yandex.ru/… или Марьино/2026-2027", style: "flex:1;min-width:260px" });
+    const err = el("p", { className: "error small" });
+    const find = el("button", { className: "btn", textContent: "☁️ Найти детей" });
+    const mac = el("button", { className: "btn ghost", textContent: "📂 Выбрать папку на Mac…" });
+    let resolveChoice;
+    const choice = new Promise((res) => (resolveChoice = res));
+    find.onclick = async () => {
+      if (!link.value.trim()) { err.textContent = "Вставьте ссылку на папку"; return; }
+      find.disabled = true; find.textContent = "Ищу…"; err.textContent = "";
+      try { const r = await api("POST", "/ui/api/import/disk", { link: link.value }); find.closest(".modal")._close(null); resolveChoice({ disk: r }); }
+      catch (e) { err.textContent = "❌ " + e.message; find.disabled = false; find.textContent = "☁️ Найти детей"; }
+    };
+    link.onkeydown = (e) => { if (e.key === "Enter") find.click(); };
+    mac.onclick = () => { mac.closest(".modal")._close(null); resolveChoice({ mac: true }); };
+    App.dialog({
+      title: "⬇ Импорт групп и детей",
+      body: [
+        el("p", {}, el("b", {}, "Ссылка на Яندекс Диск"), " — на папку с папками детей («Иван Петров») или с папками групп («6-1»)."),
+        el("p", { className: "muted small" }, "Подойдёт адрес папки из браузера (disk.yandex.ru/client/disk/…), публичная ссылка «Поделиться» (disk.yandex.ru/d/…) или путь, например Марьино/2026-2027."),
+        el("div", { className: "row" }, link, find), err,
+        el("p", { style: "margin-top:14px" }, el("b", {}, "Или папка на Mac"), " — где работы лежат по группам (например, «Проекты Детей»)."),
+        el("div", { className: "row" }, mac),
+      ],
+      buttons: [{ text: "Отмена", value: null }],
+      onOpen: () => setTimeout(() => link.focus(), 30),
+    }).then(() => resolveChoice(null));
+    const c = await choice;
+    if (!c) return;
+    if (c.disk) return c.disk.mode === "kids" ? importKids(c.disk) : importGroups({ path: c.disk.source, groups: c.disk.groups });
     let r;
     try {
-      App.toast("Выберите папку, где лежат работы по группам (например, «Проекты Детей» или папка Яндекс Диска)");
+      App.toast("Выберите папку, где лежат работы по группам (например, «Проекты Детей»)");
       r = await api("POST", "/ui/api/import/pick", {});
     } catch (e) { fail(e.message); return; }
     if (!r.path) return;
+    return importGroups(r);
+  }
+
+  // Папки детей («Имя Фамилия») без групп — выбрать, в какую группу добавить
+  async function importKids(r) {
+    const kids = r.kids.map((k) => ({ ...k, on: !k.exists_in }));
+    const gsel = el("select", {}, el("option", { value: "", textContent: "— выберите группу —" }),
+      ...proj.groups.map((g) => el("option", { value: g.name, textContent: g.name, selected: view.groupId === g.id })),
+      el("option", { value: "__new", textContent: "+ новая группа…" }));
+    const gnew = el("input", { type: "text", placeholder: "название новой группы", hidden: true, style: "width:200px" });
+    gsel.onchange = () => { gnew.hidden = gsel.value !== "__new"; if (!gnew.hidden) gnew.focus(); upd(); };
+    const filter = el("input", { type: "search", placeholder: "Найти ребёнка", style: "flex:1;min-width:160px" });
+    const allBtn = el("button", { className: "btn ghost small", textContent: "Отметить новых" });
+    const noneBtn = el("button", { className: "btn ghost small", textContent: "Снять все" });
+    const list = el("div", { className: "kids-pick" });
+    const count = el("span", { className: "muted small" });
+    const draw = () => {
+      list.innerHTML = "";
+      const q = filter.value.trim().toLowerCase().replace(/ё/g, "е");
+      for (const k of kids) {
+        if (q && !k.name.toLowerCase().replace(/ё/g, "е").includes(q)) continue;
+        const cb = el("input", { type: "checkbox", checked: k.on });
+        cb.onchange = () => { k.on = cb.checked; upd(); };
+        list.append(el("label", { className: "kid-pick" + (k.exists_in ? " exists" : "") }, cb, el("span", {}, k.name),
+          k.exists_in ? el("span", { className: "muted small kid-note" }, `есть в «${k.exists_in}»`) : null));
+      }
+    };
+    const upd = () => { count.textContent = `выбрано: ${kids.filter((k) => k.on).length} из ${kids.length}`; };
+    filter.oninput = draw;
+    allBtn.onclick = () => { kids.forEach((k) => (k.on = !k.exists_in)); draw(); upd(); };
+    noneBtn.onclick = () => { kids.forEach((k) => (k.on = false)); draw(); upd(); };
+    draw(); upd();
+    const existing = kids.filter((k) => k.exists_in).length;
+    const v = await App.dialog({
+      title: "Импорт детей с Яндекс Диска", wide: true,
+      body: [
+        el("p", { className: "muted small" }, `Папка: ${r.source}. Найдено детей: ${kids.length}` + (existing ? `, из них уже есть в группах: ${existing} (не отмечены)` : "") + "."),
+        el("div", { className: "row" }, el("b", {}, "Добавить в группу:"), gsel, gnew),
+        el("div", { className: "row", style: "margin-top:8px" }, filter, allBtn, noneBtn, count),
+        list,
+        r.link_folders ? el("p", { className: "muted small" }, "Это папка детей из настроек Диска — у новых детей сразу запомнится их папка для отправки работ.") : null,
+      ],
+      buttons: [{ text: "Отмена", value: null }, { text: "Добавить", kind: "primary", value: "ok" }],
+    });
+    if (v !== "ok") return;
+    const gname = gsel.value === "__new" ? gnew.value.trim() : gsel.value;
+    const chosen = kids.filter((k) => k.on);
+    if (!gname) { fail("Выберите группу"); return; }
+    if (!chosen.length) { fail("Не выбран ни один ребёнок"); return; }
+    try {
+      const res = await api("POST", "/ui/api/import/apply", { groups: [{ name: gname,
+        students: chosen.map((k) => ({ name: k.name, ...(r.link_folders ? { disk_folder: k.name } : {}) })) }] });
+      ok(`Добавлено детей: ${res.students}` + (res.groups ? `, создана группа «${gname}»` : ""));
+      if (res.errors.length) fail(res.errors.join("; "));
+    } catch (e) { fail(e.message); }
+    reload();
+  }
+
+  // Найденные группы с именами детей — проверить и создать
+  async function importGroups(r) {
     if (!r.groups.length) {
       App.dialog({ title: "Группы не найдены", body: [el("p", {}, "В выбранной папке нет папок с номерами групп (например, «М6-1(2)» или «6-3»)."),
         el("p", { className: "muted small" }, "Выберите папку, внутри которой лежат папки групп.")], buttons: [{ text: "Понятно", kind: "primary", value: null }] });
@@ -208,7 +298,7 @@
     }
     const add = el("button", { className: "btn ghost", textContent: "+ Новая группа" });
     add.onclick = newGroup;
-    const imp = el("button", { className: "btn orange", textContent: "⬇ Импорт из папки", title: "Создать группы и детей по папке с работами" });
+    const imp = el("button", { className: "btn orange", textContent: "⬇ Импорт детей", title: "Группы и дети — из ссылки на Яндекс Диск или папки на Mac" });
     imp.onclick = importDialog;
     side.append(add, imp, el("div", { className: "eyebrow", style: "margin-top:10px" }, "Ещё"));
     for (const [mode, ic, title, cnt] of [["unsorted", "📥", "Неразобранное", proj.unsorted.length], ["recent", "🕘", "Последние", null]]) {
@@ -248,13 +338,13 @@
   }
 
   function renderNoGroups() {
-    const imp = el("button", { className: "btn orange big", textContent: "⬇ Импорт из папки с работами" });
+    const imp = el("button", { className: "btn orange big", textContent: "⬇ Импорт детей (Яндекс Диск или папка)" });
     imp.onclick = importDialog;
     const add = el("button", { className: "btn ghost big", textContent: "+ Создать вручную" });
     add.onclick = newGroup;
     return el("section", { className: "box empty" }, el("div", { className: "big" }, "👩‍🎓"),
       el("h2", {}, "Добавьте группы и учеников"),
-      el("p", { className: "muted" }, "Быстрее всего — импорт: выберите папку, где работы лежат по группам (например, «Проекты Детей» с папками М6-1(2), М6-3…).", el("br"),
+      el("p", { className: "muted" }, "Быстрее всего — импорт: вставьте ссылку на папку детей на Яндекс Диске или выберите папку на Mac, где работы лежат по группам.", el("br"),
         "Приложение само найдёт группы и имена детей в названиях файлов, а вы проверите список."),
       el("div", { className: "row", style: "justify-content:center" }, imp, add));
   }

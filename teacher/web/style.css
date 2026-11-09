@@ -310,3 +310,10 @@ input.bad { outline: 3px solid var(--red); }
 .disk-name { border: 0; background: none; text-align: left; font-size: 15px; font-weight: 700; color: var(--ink); cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 4px 0; }
 .disk-name:hover { color: var(--teal-dark); text-decoration: underline; }
 @media (max-width: 700px) { .disk-row { grid-template-columns: 1fr 36px; } .disk-row .small { display: none; } }
+
+/* ---------- Импорт детей с Диска ---------- */
+.kids-pick { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 4px 12px; margin-top: 10px; max-height: 46vh; overflow: auto; }
+.kid-pick { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 10px; cursor: pointer; }
+.kid-pick:hover { background: var(--soft); }
+.kid-pick.exists > span:first-of-type { color: var(--muted); }
+.kid-pick .kid-note { margin-left: auto; white-space: nowrap; }

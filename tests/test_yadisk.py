@@ -25,6 +25,7 @@ class FakeYandex:
         self.uploads: dict[str, str] = {}
         self.upload_auth_headers = []
         self.trash = []
+        self.public_root = ""
 
     def app(self):
         app = web.Application(client_max_size=50 * 1024 * 1024)
@@ -33,6 +34,7 @@ class FakeYandex:
             web.get("/v1/disk/resources", self.meta),
             web.get("/v1/disk/resources/upload", self.link),
             web.delete("/v1/disk/resources", self.delete),
+            web.get("/v1/disk/public/resources", self.public),
             web.get("/v1/disk/resources/download", self.download),
             web.get("/v1/disk/", self.info),
             web.put("/upload/{id}", self.upload),
@@ -96,6 +98,17 @@ class FakeYandex:
         self.dirs = {d for d in self.dirs if d != p and not d.startswith(p + "/")}
         self.files = {f: v for f, v in self.files.items() if f != p and not f.startswith(p + "/")}
         return web.Response(status=204)
+
+    async def public(self, request):
+        """Публичная папка: доступна без токена по ссылке; ссылка ведёт в self.public_root."""
+        if request.query.get("public_key") != "https://disk.yandex.ru/d/PublicKey123":
+            return web.json_response({"message": "not found"}, status=404)
+        rel = request.query.get("path", "/").strip("/")
+        p = "/".join(x for x in (self.public_root, rel) if x)
+        pre = p + "/"
+        names = {x[len(pre):].split("/")[0] for x in self.dirs | set(self.files) if x.startswith(pre)}
+        items = [{"name": n, "type": "dir" if pre + n in self.dirs else "file"} for n in sorted(names)]
+        return web.json_response({"name": p.rsplit("/", 1)[-1], "_embedded": {"items": items, "total": len(items)}})
 
     async def download(self, request):
         self.auth(request)
@@ -455,3 +468,51 @@ def test_old_database_gets_new_column(tmp_path):
     con.close()
     db = DB(path)
     assert db.one("SELECT status, local_cleaned FROM disk_queue") == {"status": "done", "local_cleaned": 0}
+
+
+
+def test_disk_link_parsing():
+    import pytest as _pt
+    from teacher.importer import parse_disk_source
+    assert parse_disk_source("https://disk.yandex.ru/client/disk/%D0%A8%D0%BA%D0%BE%D0%BB%D0%B0/2026?idApp=client") == ("private", "Школа/2026")
+    assert parse_disk_source(" https://yadi.sk/d/Ab_12-x ") == ("public", "https://yadi.sk/d/Ab_12-x")
+    assert parse_disk_source("disk:/Школа/2026/") == ("private", "Школа/2026")
+    for bad in ("", "https://google.com/x", "Школа/../секрет", "https://disk.yandex.ru/client/disk"):
+        with _pt.raises(ValueError):
+            parse_disk_source(bad)
+
+
+async def test_import_kids_from_disk_link(env):
+    server, fake, tokens = env
+    tokens.token = TOKEN
+    gid = await setup_lesson(server, fake)          # группа «Пн»: Иванова Маша Петровна, Петя Сидоров, Орлов Коля
+    mkdirs(fake, f"{ROOT}/Вика Смирнова", f"{ROOT}/Лагерь 14-08-26", f"{ROOT}/Make Code", f"{ROOT}/Анна-Мария Ким")
+    status, r = await ui(server, "POST", "/ui/api/import/disk", json={"link": "https://disk.yandex.ru/client/disk/Школа/2026"})
+    assert status == 200 and r["mode"] == "kids" and r["link_folders"] is True
+    by = {k["name"]: k for k in r["kids"]}
+    assert set(by) == {"Маша Иванова", "Коля Орлов", "Вика Смирнова", "Анна-Мария Ким"}   # без «Лагеря» и «Make Code»
+    assert by["Маша Иванова"]["exists_in"] == "Пн" and by["Вика Смирнова"]["exists_in"] == ""
+
+    status, res = await ui(server, "POST", "/ui/api/import/apply", json={"groups": [{"name": "Вт", "students": [
+        {"name": "Вика Смирнова", "disk_folder": "Вика Смирнова"}, {"name": "Анна-Мария Ким", "disk_folder": "Анна-Мария Ким"}]}]})
+    assert res == {"groups": 1, "students": 2, "errors": []}
+    vika = next(st for st in server.db.students() if st["name"] == "Вика Смирнова")
+    assert vika["group_name"] == "Вт"
+    assert server.db.one("SELECT folder FROM disk_links WHERE student_id=?", (vika["id"],))["folder"] == "Вика Смирнова"
+    status, r = await ui(server, "POST", "/ui/api/import/disk", json={"link": "Нет/Такой"})
+    assert status == 400 and "не найдена" in r["error"]
+
+
+async def test_import_groups_from_public_link(env):
+    server, fake, tokens = env                      # публичная ссылка работает и без токена
+    mkdirs(fake, "Чужой/Проекты/М6-1(2)", "Чужой/Проекты/6-3", "Чужой/Проекты/Разное")
+    for name in ("Ваня6-1(2) проект.pptx", "Дамир игра.sb3"):
+        fake.files[f"Чужой/Проекты/М6-1(2)/{name}"] = b"x"
+    fake.files["Чужой/Проекты/6-3/Вася6-3 проект.pptx"] = b"x"
+    fake.public_root = "Чужой/Проекты"
+    status, r = await ui(server, "POST", "/ui/api/import/disk", json={"link": "https://disk.yandex.ru/d/PublicKey123"})
+    assert status == 200 and r["mode"] == "groups"
+    assert {g["name"]: [s["name"] for s in g["students"]] for g in r["groups"]} == \
+        {"М6-1(2)": ["Ваня", "Дамир"], "6-3": ["Вася"]}
+    status, r = await ui(server, "POST", "/ui/api/import/disk", json={"link": "https://disk.yandex.ru/d/Wrong"})
+    assert status == 400
