@@ -24,7 +24,7 @@ from agent import __version__
 from agent.client import AgentClient
 from agent.collector import Collector
 from agent.core import AgentCore
-from agent.pairing import PairingFlow
+from agent.pairing import PairingCancelled, PairingFlow
 from agent.updater import (
     after_update_started,
     cleanup_after_update,
@@ -246,20 +246,43 @@ def main(argv: list[str] | None = None, platform: Platform | None = None) -> int
     t.daemon = True
     t.start()
 
-    core = AgentCore(platform)
-    core.collector = Collector(platform)
-    core.collector.excluded_roots = core.materials_roots
-    client = AgentClient(platform, state, core=core)
-    try:
-        asyncio.run(client.run())
-    except KeyboardInterrupt:
-        pass
-    if client.unpaired:
-        # Учитель отвязал ноутбук: забываем токен. При следующем запуске спросим код.
+    return run_agent(platform, state)
+
+
+def run_agent(platform: Platform, state: AgentState, make_client=None, make_flow=None) -> int:
+    """
+    Работа агента. Если учитель отвязал ноутбук — не завершаемся, а тихо (без окна) стучимся
+    к учителю: в панели ноутбук появится в «Ноутбуки рядом» с кнопкой «Подключить».
+    Если учитель нажал «Отклонить» — перестаём стучаться до следующего запуска.
+    make_client / make_flow — для тестов.
+    """
+    make_client = make_client or (lambda st, core: AgentClient(platform, st, core=core))
+    make_flow = make_flow or (lambda: PairingFlow(platform))
+    while True:
+        # Ядро — заново на каждом круге: объекты asyncio нельзя переносить в новый цикл событий
+        core = AgentCore(platform)
+        core.collector = Collector(platform)
+        core.collector.excluded_roots = core.materials_roots
+        client = make_client(state, core)
+        try:
+            asyncio.run(client.run())
+        except KeyboardInterrupt:
+            return 0
+        finally:
+            if core.collector is not None:
+                core.collector.stop_watching()
+        if not client.unpaired:
+            return 0
         AgentState.clear(platform)
-        AgentState.path(platform).with_name("installed").unlink(missing_ok=True)
-        log.info("Ноутбук отвязан, агент завершает работу")
-    return 0
+        log.info("Ноутбук отвязан — жду, пока учитель снова подключит его")
+        try:
+            state = asyncio.run(make_flow().run())
+        except PairingCancelled:
+            log.info("Учитель отклонил подключение — агент завершает работу")
+            return 0
+        except KeyboardInterrupt:
+            return 0
+        log.info("Снова подключён: ноутбук № %s", state.laptop_number)
 
 
 if __name__ == "__main__":

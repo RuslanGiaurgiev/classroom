@@ -455,12 +455,24 @@ class TeacherServer:
             })
         return {
             "laptops": laptops,
-            "pair_requests": [r.public() for r in self.pairing.pending()],
+            "pair_requests": self._pair_requests_public(),
             "teacher": {"ip": self.host_ip_fn(), "port": self.port, "teacher_id": self.storage.teacher_id},
             "settings": self.public_settings(),
             "updates": self.updates.public(),
             "materials": self.materials.public(),
         }
+
+    def _pair_requests_public(self) -> list[dict]:
+        """Стучащиеся ноутбуки + номер, который у них был раньше (если свободен)."""
+        former = self.storage.settings().get("former_laptops") or {}
+        taken = set(self.storage.laptops())
+        out = []
+        for r in self.pairing.pending():
+            d = r.public()
+            n = former.get(r.hostname)
+            d["former_number"] = n if n and n not in taken else ""
+            out.append(d)
+        return out
 
     def public_settings(self) -> dict[str, Any]:
         st = self.storage.settings()
@@ -706,6 +718,13 @@ class TeacherServer:
     async def handle_ui_unpair(self, request: web.Request) -> web.Response:
         number = request.match_info["number"]
         conn = self.agents.get(number)
+        info = self.storage.laptops().get(number) or {}
+        host = (conn.hostname if conn else "") or info.get("hostname", "")
+        if host:
+            # Если этот ноутбук снова постучится — предложим ему тот же номер
+            former = dict(self.storage.settings().get("former_laptops") or {})
+            former[host] = number
+            self.storage.update_settings(former_laptops=dict(list(former.items())[-100:]))
         removed = self.storage.remove_laptop(number)
         if conn:
             await conn.ws.close(code=4003, message=b"unpaired")

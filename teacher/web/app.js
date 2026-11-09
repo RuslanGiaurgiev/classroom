@@ -256,7 +256,7 @@ async function laptopDialog(l) {
   if (v === "rename") renameLaptop(l.number);
   if (v === "opened") App.openedDialog([l.number]);
   if (v === "unpair") {
-    if (!(await confirmBox(`Отвязать ноутбук ${l.number}?\nЧтобы подключить его снова, запустите на нём agent.exe и нажмите «Принять».`, { okText: "Отвязать", danger: true }))) return;
+    if (!(await confirmBox(`Отвязать ноутбук ${l.number}?\nОн появится в «Ноутбуки рядом» — подключить снова можно кнопкой «Подключить» (на ноутбуке ничего делать не нужно).`, { okText: "Отвязать", danger: true }))) return;
     try { await api("DELETE", `/ui/api/laptops/${encodeURIComponent(l.number)}`); toast(`Ноутбук ${l.number} отвязан`, "ok"); }
     catch (e) { toast(e.message, "error"); }
   }
@@ -293,11 +293,11 @@ function renderRequests() {
   box.innerHTML = "";
   const taken = new Set(state.laptops.map((l) => l.number));
   for (const r of reqs) {
-    let n = 1;
-    while (taken.has(String(n))) n++;
-    taken.add(String(n));
-    const num = el("input", { type: "text", maxLength: 10, placeholder: "номер", className: "req-num", value: String(n) });
-    const ok = el("button", { className: "btn", textContent: "Принять" });
+    let n = r.former_number && !taken.has(r.former_number) ? r.former_number : "";
+    if (!n) { let i = 1; while (taken.has(String(i))) i++; n = String(i); }
+    taken.add(n);
+    const num = el("input", { type: "text", maxLength: 10, placeholder: "номер", className: "req-num", value: n });
+    const ok = el("button", { className: "btn", textContent: "Подключить" });
     ok.onclick = async () => {
       const number = num.value.trim();
       if (!number) { num.focus(); return; }
@@ -312,7 +312,7 @@ function renderRequests() {
     box.append(el("div", { className: "req" },
       el("div", { className: "match", title: "Число для сверки — такое же на экране ноутбука" }, r.match_code),
       el("div", { className: "req-info" }, el("b", {}, r.hostname || "Ноутбук"),
-        el("div", { className: "muted small" }, `пользователь ${r.username || "—"} · ${r.ip}`)),
+        el("div", { className: "muted small" }, `пользователь ${r.username || "—"} · ${r.ip}` + (r.former_number ? ` · раньше был № ${r.former_number}` : ""))),
       el("span", { className: "muted small" }, "номер:"), num, ok, no));
   }
 }

@@ -188,6 +188,12 @@ class Collector:
 
     # ================= Слежение за папками =================
 
+    def stop_watching(self) -> None:
+        """Остановить слежение за папками (перед повторной привязкой создаётся новый сборщик)."""
+        if self._observer is not None:
+            self._observer.stop()
+            self._observer = None
+
     def _restart_watchdog(self) -> None:
         if not self.use_watchdog:
             return
