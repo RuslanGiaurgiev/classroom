@@ -173,7 +173,7 @@ async def test_plan_and_send_into_kids_folders(env):
     assert r == {"queued": 2, "skipped": 0, "created": ["Петя Сидоров"]}
     await server.disk.process_queue()
     assert set(fake.files) == {f"{ROOT}/Маша Иванова/Make Code/Урок 3 — Анимация (08.11.2026)/Маша проект.sb3",
-                               f"{ROOT}/Петя Сидоров/MakeCode/Урок 3 — Анимация (08.11.2026)/Петя игра.sb3"}
+                               f"{ROOT}/Петя Сидоров/Make Code/Урок 3 — Анимация (08.11.2026)/Петя игра.sb3"}   # как у других детей
     assert fake.upload_auth_headers == [None, None]               # токен не уходит на адрес загрузки
 
     # Второй раз — ничего не дублируется; выбор папок и программа запомнились
@@ -181,7 +181,7 @@ async def test_plan_and_send_into_kids_folders(env):
     assert r["queued"] == 0 and r["skipped"] == 2
     _, plan = await ui(server, "GET", f"/ui/api/disk/plan?group_id={gid}&date=2026-11-08")
     assert {x["name"]: x["status"] for x in plan["students"]}["Петя Сидоров"] == "found"
-    assert plan["group_program"] == "MakeCode" and plan["topics"] == ["Анимация"]
+    assert plan["group_program"] == "Make Code" and plan["topics"] == ["Анимация"]
     assert all(f["sent"] for x in plan["students"] if x["name"] != "Орлов Коля" for f in x["files"])
 
 
@@ -269,3 +269,22 @@ async def test_old_auto_queue_cancelled_once(env):
     server.disk._cancel_old_auto_queue()
     await server.disk.process_queue()
     assert fake.files == {} and server.db.one("SELECT status FROM disk_queue")["status"] == "cancelled"
+
+
+async def test_wrong_root_is_flagged_and_program_spelling_kept(env):
+    server, fake, tokens = env
+    tokens.token = TOKEN
+    gid = await setup_lesson(server, fake)
+    mkdirs(fake, f"{ROOT}/Петя Сидоров", "Пустая")
+    _, plan = await ui(server, "GET", f"/ui/api/disk/plan?group_id={gid}&date=2026-11-08&program=TINKERCAD")
+    assert not plan["root_suspicious"] and plan["program"] == "Tinkercad"   # написание как у детей на Диске
+    petya = next(x for x in plan["students"] if x["name"] == "Петя Сидоров")
+    await ui(server, "POST", "/ui/api/disk/send", json={
+        "group_id": gid, "date": "2026-11-08", "program": "TinkerCAD", "lesson": 1, "topic": "",
+        "students": [{"student_id": petya["student_id"], "folder": "Петя Сидоров"}]})
+    await server.disk.process_queue()
+    assert list(fake.files) == [f"{ROOT}/Петя Сидоров/Tinkercad/Урок 1 (08.11.2026)/Петя игра.sb3"]
+
+    server.storage.update_settings(disk_root="Пустая")                    # не та папка: детей в ней нет
+    _, plan = await ui(server, "GET", f"/ui/api/disk/plan?group_id={gid}&date=2026-11-08&program=Make Code")
+    assert plan["root_suspicious"] and all(x["status"] == "missing" for x in plan["students"])

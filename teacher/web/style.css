@@ -297,3 +297,4 @@ details.log-box summary { cursor: pointer; font-family: var(--font-head); text-t
 .ds-main { flex: 1; min-width: 0; display: grid; gap: 3px; }
 .ds-warn { color: var(--orange-dark, #b85c00); font-weight: 700; display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .ds-dest { overflow-wrap: anywhere; }
+.ds-alert { background: #FFF1E6; border: 2px solid var(--orange); border-radius: 14px; padding: 10px 12px; font-weight: 700; color: var(--orange-dark); }

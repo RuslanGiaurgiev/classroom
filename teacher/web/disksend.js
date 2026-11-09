@@ -60,6 +60,11 @@
       if (!p.students.length) { info.textContent = `За ${ruDate(p.date)} у группы «${p.group.name}» нет разобранных работ.`; return; }
       if (!p.program) { info.textContent = "Выберите программу — покажу, куда попадут работы."; }
       else info.textContent = `Папка на Диске: ${p.root}`;
+      if (p.program && p.program !== prog.value.trim() && document.activeElement !== prog) prog.value = p.program;
+      if (p.root_suspicious) {
+        list.append(el("div", { className: "ds-alert" }, `⚠️ В папке «${p.root}» не нашлись папки большинства учеников. Возможно, в настройках указана не та папка (нужна та, где лежат папки детей, например «Марьино/2026-2027»). `,
+          el("button", { className: "btn small orange", textContent: "Открыть настройки", onclick: () => { document.querySelector(".modal")._close(); App.showTab("settings"); if (App.openSettings) App.openSettings("disk"); } })));
+      }
       for (const st of p.students) {
         const unsent = st.files.filter((f) => !f.sent);
         const row = { st, include: el("input", { type: "checkbox", checked: unsent.length > 0, disabled: !unsent.length }), folder: null, create: null };
@@ -75,7 +80,7 @@
           const name = el("input", { type: "text", value: st.new_name, style: "width:200px" });
           const pick = el("select", { title: "Если папка ребёнка на Диске названа иначе" },
             el("option", { value: "", textContent: "или выбрать существующую…" }), ...p.folders.map((f) => el("option", { value: f, textContent: f })));
-          row.create = el("input", { type: "checkbox" });
+          row.create = el("input", { type: "checkbox", disabled: !!p.root_suspicious, title: p.root_suspicious ? "Сначала проверьте папку в настройках" : "" });
           const createLabel = el("label", {}, row.create, " создать ");
           row.folder = () => pick.value || name.value.trim();
           row.isNew = () => !pick.value;

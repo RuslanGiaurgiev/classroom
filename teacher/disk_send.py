@@ -163,8 +163,14 @@ class DiskSender:
                         kid_path = f"{root}/{item['folder']}"
                         kid_items = await self.disk.list_dir(s, kid_path) or []
                         for i in kid_items:
-                            if i["type"] == "dir" and i["name"] not in DIRECTION_FOLDERS:
+                            if i["type"] != "dir":
+                                continue
+                            if i["name"] not in DIRECTION_FOLDERS:
                                 programs[i["name"]] += 1
+                            else:   # программы внутри «Программирование»/«Робототехника»
+                                for j in await self.disk.list_dir(s, f"{kid_path}/{i['name']}") or []:
+                                    if j["type"] == "dir":
+                                        programs[j["name"]] += 1
                         if program:
                             rel, inside = await self._program_place(s, kid_path, kid_items, program)
                             item["program_path"] = rel
@@ -180,17 +186,33 @@ class DiskSender:
         suggest = last.most_common(1)[0][0] + 1 if last else 1
         st = self.server.storage.settings()
         prefs = (st.get("disk_group_prefs") or {}).get(str(group_id), {})
-        known = list(dict.fromkeys([*(n for n, _ in programs.most_common()), *(st.get("disk_programs") or [])]))
+        known = list(dict.fromkeys([*(n for n, _ in programs.most_common()), *(st.get("disk_known_programs") or []),
+                                    *(st.get("disk_programs") or [])]))
+        if programs:
+            seen = list(dict.fromkeys([*(n for n, _ in programs.most_common()), *(st.get("disk_known_programs") or [])]))
+            self.server.storage.update_settings(disk_known_programs=seen[:50])
+        program = self.canonical_program(program, known)
+        found = sum(1 for r in result if r["status"] == "found")
         return {"root": root, "date": day, "group": {"id": group_id, "name": group["name"]},
                 "program": program, "programs": known, "group_program": prefs.get("program", ""),
                 "lesson_suggest": suggest, "topics": st.get("disk_topics") or [], "students": result,
-                "folders": kid_folders}
+                "folders": kid_folders,
+                # Почти никого не нашли — скорее всего, в настройках не та папка
+                "root_suspicious": len(result) >= 2 and found * 2 < len(result)}
 
     # ================= Отправка =================
 
+    def canonical_program(self, program: str, known: list[str] | None = None) -> str:
+        """«TinkerCad» → «Tinkercad», если у детей на Диске программа уже так называется."""
+        if not program:
+            return program
+        st = self.server.storage.settings()
+        known = known if known is not None else [*(st.get("disk_known_programs") or []), *(st.get("disk_programs") or [])]
+        return next((k for k in known if _key(k) == _key(program)), program)
+
     async def send(self, group_id: int, day: str, program: str, lesson: int, topic: str, choices: list[dict]) -> dict:
         root = self.disk.root()
-        program = safe_name(" ".join(program.split()))
+        program = safe_name(self.canonical_program(" ".join(program.split())))
         topic = " ".join(topic.split())[:100]
         files = self._files(group_id, day)
         students = {s["id"]: s for s in self.db.students(group_id)}
