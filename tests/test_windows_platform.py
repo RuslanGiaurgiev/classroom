@@ -141,3 +141,10 @@ def test_browser_tabs_listed_and_closed(wp, tmp_path):
         print(wp.close_window(win["id"], False))
     finally:
         subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+
+
+def test_independent_env_for_new_agent_copies():
+    """Новая копия agent.exe распаковывается сама, а не берёт папку запустившего процесса."""
+    from agent.platform.windows import independent_env, own_files_ok
+    assert independent_env()["PYINSTALLER_RESET_ENVIRONMENT"] == "1"
+    assert own_files_ok()          # из исходников — всегда True

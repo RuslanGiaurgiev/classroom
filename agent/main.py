@@ -58,7 +58,8 @@ def _selftest_version(exe: Path) -> str | None:
     import tempfile
     out = Path(tempfile.gettempdir()) / f"agent-version-{os.getpid()}.txt"
     try:
-        subprocess.run([str(exe), "--selftest", str(out)], timeout=60,
+        env = dict(os.environ, PYINSTALLER_RESET_ENVIRONMENT="1")   # другой exe — пусть распакуется сам
+        subprocess.run([str(exe), "--selftest", str(out)], timeout=60, env=env,
                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         text = out.read_text(encoding="utf-8")
         return text.split()[1] if text.startswith("ok ") else None
@@ -123,6 +124,12 @@ def selftest(out_file: str) -> int:
             importlib.import_module(mod)
         if sys.platform == "win32":
             importlib.import_module("agent.platform.windows")
+            # tkinter (окна «Внимание», сообщения) находит свои файлы
+            from agent.platform.windows import own_files_ok
+            if not own_files_ok():
+                raise RuntimeError("нет файлов Tcl/Tk в распаковке exe")
+            import tkinter
+            tkinter.Tcl().eval("info patchlevel")
             # Список окон и UI Automation (comtypes) работают в собранном exe
             from agent.platform import win_open
             win_open.list_open()

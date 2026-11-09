@@ -108,6 +108,26 @@ def overlay_command(spec: dict) -> tuple[list[str], str | None]:
     return [sys.executable, "-m", "agent.main", "--overlay", arg], repo
 
 
+def independent_env() -> dict:
+    """
+    Окружение для запуска agent.exe как НЕЗАВИСИМОЙ программы.
+    Иначе собранный PyInstaller exe считает себя частью запустившего его процесса и пользуется
+    его временной папкой распаковки (_MEI…). Когда тот процесс завершается, папка удаляется,
+    и у нового пропадают, например, файлы tkinter («Tcl data directory … not found»).
+    """
+    env = dict(os.environ)
+    env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    return env
+
+
+def own_files_ok() -> bool:
+    """Файлы распаковки текущего agent.exe на месте (данные tkinter не удалены)."""
+    base = getattr(sys, "_MEIPASS", None)
+    if not getattr(sys, "frozen", False) or not base:
+        return True
+    return os.path.isdir(os.path.join(base, "_tcl_data")) and os.path.isdir(os.path.join(base, "_tk_data"))
+
+
 def _blob(data: bytes) -> tuple[DATA_BLOB, ctypes.Array]:
     buf = ctypes.create_string_buffer(data, len(data))
     return DATA_BLOB(len(data), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char))), buf
@@ -259,9 +279,10 @@ class WindowsPlatform(Platform):
         base = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
         CREATE_BREAKAWAY_FROM_JOB = 0x01000000
         try:
-            return subprocess.Popen([str(exe_path), *args], close_fds=True, creationflags=base | CREATE_BREAKAWAY_FROM_JOB)
+            return subprocess.Popen([str(exe_path), *args], close_fds=True, env=independent_env(),
+                                    creationflags=base | CREATE_BREAKAWAY_FROM_JOB)
         except OSError:
-            return subprocess.Popen([str(exe_path), *args], close_fds=True, creationflags=base)
+            return subprocess.Popen([str(exe_path), *args], close_fds=True, env=independent_env(), creationflags=base)
 
     def describe_agent_processes(self) -> str:
         script = ("Get-CimInstance Win32_Process -Filter \"Name like 'agent%'\" | "
@@ -346,7 +367,12 @@ class WindowsPlatform(Platform):
         control.touch()
         spec = {**spec, "parent_pid": os.getpid(), "control_file": str(control)}
         cmd, cwd = overlay_command(spec)
-        proc = subprocess.Popen(cmd, cwd=cwd, creationflags=CREATE_NO_WINDOW, close_fds=True)
+        # Обычно окно берёт уже распакованные файлы агента (быстро). Если их кто-то удалил
+        # (так было после обновления 0.5.1) — окно распакуется заново само.
+        env = None if own_files_ok() else independent_env()
+        if env is not None:
+            log.warning("Файлы распаковки агента повреждены — окно запускается отдельной копией")
+        proc = subprocess.Popen(cmd, cwd=cwd, creationflags=CREATE_NO_WINDOW, close_fds=True, env=env)
         return _OverlayProcess(proc, control)
 
     def shutdown(self, reboot: bool) -> None:
