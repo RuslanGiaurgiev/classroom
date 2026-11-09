@@ -292,11 +292,30 @@ function renderRequests() {
   const box = $("requests");
   box.innerHTML = "";
   const taken = new Set(state.laptops.map((l) => l.number));
+  const rows = [];   // {r, num} — для «Подключить все»
+  if (reqs.length > 1) {
+    const all = el("button", { className: "btn", textContent: `Подключить все (${reqs.length})`,
+      title: "Каждый ноутбук — с номером, указанным в его строке" });
+    all.onclick = async () => {
+      const nums = rows.map((x) => x.num.value.trim());
+      if (nums.some((n) => !n)) { toast("У каждого ноутбука должен быть номер", "error"); return; }
+      if (new Set(nums).size !== nums.length) { toast("Номера повторяются — исправьте", "error"); return; }
+      all.disabled = true;
+      let done = 0;
+      for (const x of rows) {
+        try { await api("POST", `/ui/api/pair-requests/${x.r.id}/approve`, { number: x.num.value.trim() }); done++; }
+        catch (e) { toast(`${x.r.hostname || "Ноутбук"}: ${e.message}`, "error"); }
+      }
+      toast(`Подключено ноутбуков: ${done}`, "ok");
+    };
+    box.append(el("div", { className: "row", style: "margin-bottom:8px" }, all));
+  }
   for (const r of reqs) {
     let n = r.former_number && !taken.has(r.former_number) ? r.former_number : "";
     if (!n) { let i = 1; while (taken.has(String(i))) i++; n = String(i); }
     taken.add(n);
     const num = el("input", { type: "text", maxLength: 10, placeholder: "номер", className: "req-num", value: n });
+    rows.push({ r, num });
     const ok = el("button", { className: "btn", textContent: "Подключить" });
     ok.onclick = async () => {
       const number = num.value.trim();

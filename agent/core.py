@@ -137,7 +137,7 @@ class AgentCore:
         from agent.updater import Updater
         self.updater = Updater(platform, self)
         self.materials = MaterialsReceiver(platform, self)
-        self.client = None     # AgentClient — задаётся клиентом
+        self.client = None     # AgentClient или AgentHub (несколько учителей)
 
     def start_background(self) -> list[asyncio.Task]:
         """Фоновые задачи ядра (запускает клиент)."""

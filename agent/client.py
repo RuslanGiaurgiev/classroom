@@ -64,9 +64,13 @@ class AgentClient:
         self.use_mdns = use_mdns
         self.backoff = backoff or Backoff()
         self.core = core or AgentCore(platform)
-        self.core.client = self  # ядру (сбору файлов) нужен адрес учителя и способ слать статусы
-        if self.core.collector is not None:
+        # Ядру (сбору файлов, материалам) нужен адрес учителя и способ слать статусы.
+        # Если учителей несколько, это место занимает AgentHub — не перетираем его.
+        if not getattr(self.core.client, "is_hub", False):
+            self.core.client = self
+        if self.core.collector is not None and not getattr(self.core.collector.client, "is_hub", False):
             self.core.collector.client = self
+        self.hub = None   # AgentHub, если ноутбук привязан к нескольким учителям
         self.base_url: str | None = None  # http://ip:порт учителя, пока есть связь
         self.connected = asyncio.Event()
         self.unpaired = False   # учитель отвязал ноутбук — работать дальше нет смысла
@@ -77,7 +81,8 @@ class AgentClient:
 
     async def run(self) -> None:
         """Работает, пока не вызвали stop() или учитель не отвязал ноутбук."""
-        background = self.core.start_background()
+        # Фоновые задачи ядра (сбор файлов, окна) запускает хаб — один раз на все соединения
+        background = self.core.start_background() if self.hub is None else []
         try:
             await self._run_loop()
         finally:
@@ -173,6 +178,8 @@ class AgentClient:
                 self.backoff.reset()
                 self.base_url = f"http://{host}:{port}"
                 self.connected.set()
+                if self.hub is not None:
+                    self.hub.on_link_connected(self)
                 self.core.on_connected()
 
                 async for raw in ws:
@@ -186,13 +193,16 @@ class AgentClient:
                     if msg.type == MsgType.COMMAND:
                         asyncio.create_task(self._handle_command(ws, msg))
                     elif msg.type == MsgType.CONFIG:
-                        self.core.apply_config(msg.payload)
+                        if self.hub is None or self.hub.is_active(self):
+                            self.core.apply_config(msg.payload)   # настройки сбора — от ведущего урок
                 self._check_close_code(ws)
                 return True
             finally:
                 self.connected.clear()
                 self.base_url = None
                 self._ws = None
+                if self.hub is not None:
+                    self.hub.on_link_disconnected(self)
                 if not ws.closed:
                     await ws.close()
 
@@ -232,6 +242,8 @@ class AgentClient:
 
     async def _handle_command(self, ws: aiohttp.ClientWebSocketResponse, msg: Message) -> None:
         command_id = str(msg.payload.get("command_id", ""))
+        if self.hub is not None:
+            self.hub.mark_active(self)   # этот учитель сейчас ведёт урок — его работы и получают
         try:
             # Повторная проверка на стороне агента: выполняем только разрешённое
             action, params = validate_command(str(msg.payload.get("action", "")), msg.payload.get("params") or {})

@@ -21,10 +21,9 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from agent import __version__
-from agent.client import AgentClient
 from agent.collector import Collector
 from agent.core import AgentCore
-from agent.pairing import PairingCancelled, PairingFlow
+from agent.pairing import PairingFlow
 from agent.updater import (
     after_update_started,
     cleanup_after_update,
@@ -35,7 +34,7 @@ from agent.updater import (
 from shared.update import is_newer
 from agent.platform import get_platform
 from agent.platform.base import Platform
-from agent.state import AgentState
+from agent.state import AgentConfig, AgentState
 
 log = logging.getLogger("agent")
 
@@ -212,8 +211,8 @@ def main(argv: list[str] | None = None, platform: Platform | None = None) -> int
             install(platform)
         return 0
 
-    state = AgentState.load(platform)
-    if state is None:
+    config = AgentConfig.load(platform)
+    if not config.accounts:
         # Первое подключение: окно со статусом, ждём «Принять» у учителя
         state = platform.run_pairing_window(PairingFlow(platform))
         if state is None:
@@ -246,43 +245,27 @@ def main(argv: list[str] | None = None, platform: Platform | None = None) -> int
     t.daemon = True
     t.start()
 
-    return run_agent(platform, state)
+    return run_agent(platform, AgentConfig.load(platform))
 
 
-def run_agent(platform: Platform, state: AgentState, make_client=None, make_flow=None) -> int:
+def run_agent(platform: Platform, config: AgentConfig, make_hub=None) -> int:
     """
-    Работа агента. Если учитель отвязал ноутбук — не завершаемся, а тихо (без окна) стучимся
-    к учителю: в панели ноутбук появится в «Ноутбуки рядом» с кнопкой «Подключить».
-    Если учитель нажал «Отклонить» — перестаём стучаться до следующего запуска.
-    make_client / make_flow — для тестов.
+    Работа агента: постоянная связь со всеми учителями, к которым привязан ноутбук,
+    и поиск новых учителей в сети (см. agent/hub.py). Отвязка одним учителем не мешает остальным.
+    make_hub(core, config) — для тестов.
     """
-    make_client = make_client or (lambda st, core: AgentClient(platform, st, core=core))
-    make_flow = make_flow or (lambda: PairingFlow(platform))
-    while True:
-        # Ядро — заново на каждом круге: объекты asyncio нельзя переносить в новый цикл событий
-        core = AgentCore(platform)
-        core.collector = Collector(platform)
-        core.collector.excluded_roots = core.materials_roots
-        client = make_client(state, core)
-        try:
-            asyncio.run(client.run())
-        except KeyboardInterrupt:
-            return 0
-        finally:
-            if core.collector is not None:
-                core.collector.stop_watching()
-        if not client.unpaired:
-            return 0
-        AgentState.clear(platform)
-        log.info("Ноутбук отвязан — жду, пока учитель снова подключит его")
-        try:
-            state = asyncio.run(make_flow().run())
-        except PairingCancelled:
-            log.info("Учитель отклонил подключение — агент завершает работу")
-            return 0
-        except KeyboardInterrupt:
-            return 0
-        log.info("Снова подключён: ноутбук № %s", state.laptop_number)
+    from agent.hub import AgentHub
+    core = AgentCore(platform)
+    core.collector = Collector(platform)
+    core.collector.excluded_roots = core.materials_roots
+    hub = make_hub(core, config) if make_hub else AgentHub(platform, core, config)
+    try:
+        asyncio.run(hub.run())
+    except KeyboardInterrupt:
+        pass
+    finally:
+        core.collector.stop_watching()
+    return 0
 
 
 if __name__ == "__main__":
