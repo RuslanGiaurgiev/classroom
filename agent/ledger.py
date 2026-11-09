@@ -93,19 +93,18 @@ class Ledger:
     def add_found(self, folder_key: str, rel_path: str, size: int, mtime_ns: int, sha256: str) -> str:
         """
         Новый готовый файл. Возвращает итоговый статус:
-          pending   — надо отправить;
-          confirmed — точно такой же файл (тот же SHA-256) учитель уже получил — повторно не шлём;
-          known     — эта версия уже записана.
+          pending — надо отправить (если у учителя такой уже есть, он сразу ответит «готово»);
+          known   — эта версия уже записана.
+        Раньше копии уже полученного содержимого здесь же помечались «получено» без вопроса учителю.
+        Из-за этого работа не приходила, если учитель удалил прежнюю копию, а ребёнок сохранил ту же снова.
         """
         if self.is_known(folder_key, rel_path, size, mtime_ns):
             return "known"
-        dup = self._q("SELECT 1 FROM files WHERE sha256=? AND status IN ('confirmed','trashed') LIMIT 1", (sha256,))
-        status = "confirmed" if dup else "pending"
         now = time.time()
         self._q("INSERT OR IGNORE INTO files(folder_key, rel_path, size, mtime_ns, sha256, status, first_seen, updated, note)"
-                " VALUES (?,?,?,?,?,?,?,?,?)",
-                (folder_key, rel_path, size, mtime_ns, sha256, status, now, now, "дубликат" if dup else ""))
-        return status
+                " VALUES (?,?,?,?,?,'pending',?,?,'')",
+                (folder_key, rel_path, size, mtime_ns, sha256, now, now))
+        return "pending"
 
     def recent_versions(self, folder_key: str, rel_path: str, seconds: float) -> int:
         """Сколько версий этого файла нашли за последние seconds секунд (для «шумных» файлов)."""

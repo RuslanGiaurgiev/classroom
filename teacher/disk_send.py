@@ -64,10 +64,21 @@ def new_folder_name(student_name: str) -> str:
     return safe_name(" ".join(words[:2]) or student_name)
 
 
-def lesson_folder_name(n: int, topic: str, day: str) -> str:
-    d = Date.fromisoformat(day).strftime("%d.%m.%Y")
-    topic = " ".join(topic.split())
-    return safe_name(f"Урок {n} — {topic} ({d})" if topic else f"Урок {n} ({d})")
+def resolve_lesson_dir(wanted: str, items: list[dict]) -> str:
+    """
+    Папка урока у ребёнка: та, что уже есть с таким же названием (без учёта регистра),
+    иначе — с тем же номером урока («Урок 1» → «Урок 1 — Миньон (09.11.2026)»), иначе — новая.
+    """
+    dirs = [i["name"] for i in items if i["type"] == "dir"]
+    same = next((d for d in dirs if d.strip().lower() == wanted.strip().lower()), None)
+    if same:
+        return same
+    m = LESSON_RE.match(wanted)
+    if m:
+        by_num = lesson_numbers(items).get(int(m.group(1)))
+        if by_num:
+            return by_num
+    return wanted
 
 
 def lesson_numbers(items: list[dict]) -> dict[int, str]:
@@ -90,6 +101,12 @@ class DiskSender:
         return [
             web.get("/ui/api/disk/plan", self.handle_plan),
             web.post("/ui/api/disk/send", self.handle_send),
+            web.get("/ui/api/disk/ls", self.handle_ls),
+            web.post("/ui/api/disk/delete", self.handle_delete),
+            web.post("/ui/api/disk/mkdir", self.handle_mkdir),
+            web.post("/ui/api/disk/upload", self.handle_upload),
+            web.get("/ui/api/disk/link", self.handle_link),
+            web.get("/ui/api/disk/student-folder", self.handle_student_folder),
         ]
 
     # ================= Что и куда =================
@@ -148,7 +165,7 @@ class DiskSender:
                 st = students[sid]
                 item = {"student_id": sid, "name": st["name"], "files": files[sid], "status": "missing",
                         "folder": "", "options": [], "new_name": new_folder_name(st["name"]),
-                        "program_path": "", "lessons": {}}
+                        "program_path": "", "lessons": {}, "lesson_dirs": []}
                 linked = self._link(sid)
                 if linked and linked in kid_folders:
                     item.update(status="found", folder=linked)
@@ -175,6 +192,7 @@ class DiskSender:
                             rel, inside = await self._program_place(s, kid_path, kid_items, program)
                             item["program_path"] = rel
                             item["lessons"] = {str(k): v for k, v in lesson_numbers(inside).items()}
+                            item["lesson_dirs"] = [i["name"] for i in inside if i["type"] == "dir"]
                 elif program:
                     item["program_path"] = safe_name(program)
                 return item
@@ -210,10 +228,10 @@ class DiskSender:
         known = known if known is not None else [*(st.get("disk_known_programs") or []), *(st.get("disk_programs") or [])]
         return next((k for k in known if _key(k) == _key(program)), program)
 
-    async def send(self, group_id: int, day: str, program: str, lesson: int, topic: str, choices: list[dict]) -> dict:
+    async def send(self, group_id: int, day: str, program: str, lesson_folder: str, choices: list[dict]) -> dict:
         root = self.disk.root()
         program = safe_name(self.canonical_program(" ".join(program.split())))
-        topic = " ".join(topic.split())[:100]
+        lesson_folder = safe_name(" ".join(lesson_folder.split())[:100])
         files = self._files(group_id, day)
         students = {s["id"]: s for s in self.db.students(group_id)}
         queued = skipped = 0
@@ -242,7 +260,7 @@ class DiskSender:
                 kid_path = f"{root}/{folder}"
                 kid_items = (await self.disk.list_dir(s, kid_path) or []) if folder in existing else []
                 rel, inside = await self._program_place(s, kid_path, kid_items, program)
-                lesson_dir = lesson_numbers(inside).get(lesson) or lesson_folder_name(lesson, topic, day)
+                lesson_dir = resolve_lesson_dir(lesson_folder, inside)
                 for f in files[sid]:
                     if f["sent"]:
                         skipped += 1
@@ -257,10 +275,10 @@ class DiskSender:
         prefs = dict(st.get("disk_group_prefs") or {})
         prefs[str(group_id)] = {"program": program}
         programs = list(dict.fromkeys([program, *(st.get("disk_programs") or [])]))[:30]
-        topics = list(dict.fromkeys([t for t in [topic, *(st.get("disk_topics") or [])] if t]))[:MAX_TOPICS]
+        topics = list(dict.fromkeys([t for t in [lesson_folder, *(st.get("disk_topics") or [])] if t]))[:MAX_TOPICS]
         self.server.storage.update_settings(disk_group_prefs=prefs, disk_programs=programs, disk_topics=topics)
         log.info("На Диск: группа %s, %s, урок %s — в очереди %s, пропущено %s, новых папок %s",
-                 group_id, program, lesson, queued, skipped, len(created))
+                 group_id, program, lesson_folder, queued, skipped, len(created))
         self.disk.wake()
         await self.server.broadcast_event({"kind": "disk_changed"})
         return {"queued": queued, "skipped": skipped, "created": created}
@@ -297,14 +315,134 @@ class DiskSender:
     async def handle_send(self, request: web.Request) -> web.Response:
         b = await request.json()
         try:
-            gid, day, lesson = int(b.get("group_id")), self._day(b.get("date")), int(b.get("lesson"))
+            gid, day = int(b.get("group_id")), self._day(b.get("date"))
         except (TypeError, ValueError):
             return web.json_response({"error": "Некорректная группа, дата или номер урока"}, status=400)
         program = " ".join(str(b.get("program") or "").split())[:80]
         if not program:
             return web.json_response({"error": "Выберите программу (например, Make Code)"}, status=400)
-        if not 1 <= lesson <= 300:
-            return web.json_response({"error": "Номер урока: от 1 до 300"}, status=400)
+        lesson_folder = " ".join(str(b.get("folder_name") or "").split())
+        if not lesson_folder or len(lesson_folder) > 100 or any(c in lesson_folder for c in '/\\:*?"<>|'):
+            return web.json_response({"error": "Название папки урока: до 100 символов, без / \\ : * ? \" < > |"}, status=400)
         choices = b.get("students") if isinstance(b.get("students"), list) else []
-        return await self._guard(self.send(gid, day, program, lesson, str(b.get("topic") or ""),
+        return await self._guard(self.send(gid, day, program, lesson_folder,
                                            [c for c in choices if isinstance(c, dict)]))
+
+    # ================= Просмотр Диска (папка школы и папки детей) =================
+
+    def _full(self, rel: str, allow_root: bool = True) -> str:
+        """Путь внутри папки школы. Выйти за её пределы нельзя."""
+        root = self.disk.root()
+        if not root:
+            raise ValueError("Укажите папку на Диске («Настройки» → «Яндекс Диск»)")
+        parts = [p for p in str(rel or "").replace("\\", "/").split("/") if p.strip()]
+        if any(p.strip() in (".", "..") for p in parts):
+            raise ValueError("Некорректный путь")
+        if not parts and not allow_root:
+            raise ValueError("Папку школы целиком удалять нельзя")
+        return "/".join([root, *parts])
+
+    async def handle_ls(self, request: web.Request) -> web.Response:
+        async def run():
+            rel = request.query.get("path", "")
+            full = self._full(rel)
+            async with self.disk.session() as s:
+                items = await self.disk.list_dir(s, full)
+            if items is None:
+                raise ValueError(f"На Диске нет папки «{full}»")
+            items.sort(key=lambda i: (i["type"] != "dir", i["name"].lower()))
+            return {"root": self.disk.root(), "path": full[len(self.disk.root()):].strip("/"), "items": items}
+        return await self._guard(run())
+
+    async def handle_delete(self, request: web.Request) -> web.Response:
+        b = await request.json()
+
+        async def run():
+            full = self._full(str(b.get("path") or ""), allow_root=False)
+            async with self.disk.session() as s:
+                await self.disk.delete(s, full)
+            log.info("Яндекс Диск: в Корзину — %s", full)
+            await self.server.broadcast_event({"kind": "disk_changed"})
+            return {"ok": True}
+        return await self._guard(run())
+
+    async def handle_mkdir(self, request: web.Request) -> web.Response:
+        b = await request.json()
+
+        async def run():
+            name = " ".join(str(b.get("name") or "").split())
+            if not name or safe_name(name) != name or len(name) > 100:
+                raise ValueError("Название папки: до 100 символов, без / \\ : * ? \" < > |")
+            full = self._full(f"{b.get('path') or ''}/{name}")
+            async with self.disk.session() as s:
+                await self.disk.mkdir(s, full)
+            return {"ok": True}
+        return await self._guard(run())
+
+    async def handle_upload(self, request: web.Request) -> web.Response:
+        """Добавить файлы с Mac в папку на Диске (ничего не перезаписывая)."""
+        import hashlib
+        import tempfile
+
+        async def run():
+            folder = self._full(request.query.get("path", ""))
+            tmp_dir = Path(tempfile.mkdtemp(prefix="disk-upload-", dir=self.server.storage.data_dir))
+            saved = []
+            try:
+                reader = await request.multipart()
+                async for part in reader:
+                    if not part.filename:
+                        continue
+                    raw = part.filename
+                    if raw.isascii() and re.search(r"%[0-9A-Fa-f]{2}", raw):
+                        from urllib.parse import unquote
+                        raw = unquote(raw)        # некоторые клиенты кодируют русские имена
+                    name = safe_name(raw)
+                    path = tmp_dir / f"{len(saved)}-{name}"
+                    h = hashlib.sha256()
+                    with open(path, "wb") as fh:
+                        while chunk := await part.read_chunk(1024 * 1024):
+                            fh.write(chunk)
+                            h.update(chunk)
+                    saved.append((path, name, h.hexdigest()))
+                if not saved:
+                    raise ValueError("Не выбраны файлы")
+                done = []
+                timeout = aiohttp.ClientTimeout(total=None, sock_connect=15, sock_read=120)
+                async with self.disk.session() as s, aiohttp.ClientSession(timeout=timeout) as plain:
+                    for path, name, sha in saved:
+                        remote = await self.disk.upload_file(s, plain, path, f"{folder}/{name}", sha)
+                        done.append(remote.rpartition("/")[2])
+                log.info("Яндекс Диск: добавлено вручную в %s: %s файл(ов)", folder, len(done))
+                return {"ok": True, "names": done}
+            finally:
+                import shutil
+                shutil.rmtree(tmp_dir, ignore_errors=True)
+        return await self._guard(run())
+
+    async def handle_link(self, request: web.Request) -> web.Response:
+        async def run():
+            full = self._full(request.query.get("path", ""), allow_root=False)
+            async with self.disk.session() as s:
+                return {"href": await self.disk.download_link(s, full)}
+        return await self._guard(run())
+
+    async def handle_student_folder(self, request: web.Request) -> web.Response:
+        """Папка ученика на Диске: запомненная или найденная по имени."""
+        async def run():
+            st = self.db.student(int(request.query.get("student_id", "0")))
+            if st is None:
+                raise ValueError("Ученик не найден")
+            async with self.disk.session() as s:
+                top = await self.disk.list_dir(s, self.disk.root())
+            if top is None:
+                raise ValueError(f"На Диске нет папки «{self.disk.root()}»")
+            folders = [i["name"] for i in top if i["type"] == "dir"]
+            linked = self._link(st["id"])
+            if linked in folders:
+                return {"folder": linked}
+            opts = [f for f in folders if folder_matches(st["name"], f)]
+            if len(opts) == 1:
+                return {"folder": opts[0]}
+            return {"folder": "", "options": opts}
+        return await self._guard(run())

@@ -315,8 +315,6 @@ class Collector:
             if status == "pending":
                 added += 1
                 log.info("Новый файл: %s/%s (%s байт)", key, rel.as_posix(), st.st_size)
-            elif status == "confirmed":
-                log.info("Файл %s/%s уже был получен учителем (такое же содержимое) — не отправляю", key, rel)
         return added
 
     async def _scan_loop(self) -> None:

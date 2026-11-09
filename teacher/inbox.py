@@ -91,6 +91,21 @@ class FileReceiver:
         d.mkdir(parents=True, exist_ok=True)
         return d / f"{sha}.part", d / f"{sha}.json"
 
+    def _already_have(self, laptop: str, sha: str) -> bool:
+        """
+        Такой файл с этого ноутбука уже получен? Если учитель его удалил (мусор/ошибка),
+        а ребёнок сохранил то же самое снова — принимаем заново: это новое сохранение.
+        """
+        row = self.server.db.find_received(laptop, sha)
+        if row is None:
+            return False
+        if row["status"] != "deleted":
+            return True
+        self.server.db.q("DELETE FROM disk_queue WHERE received_id=? AND status!='done'", (row["id"],))
+        self.server.db.q("DELETE FROM received WHERE id=?", (row["id"],))
+        log.info("Ноутбук %s: файл %s прислали снова после удаления — принимаю заново", laptop, row["name"])
+        return False
+
     async def handle_init(self, request: web.Request) -> web.Response:
         laptop = self._laptop(request)
         try:
@@ -104,7 +119,7 @@ class FileReceiver:
             raise web.HTTPBadRequest(text="Некорректный запрос")
         if not 0 < size <= MAX_FILE:
             raise web.HTTPBadRequest(text="Некорректный размер")
-        if self.server.db.find_received(laptop, sha):
+        if self._already_have(laptop, sha):
             return web.json_response({"status": "done"})
         hit = ignored_by_patterns(rel_path, BUILTIN_PATTERNS + self.server.storage.settings().get("ignore_patterns", []))
         if hit:
@@ -149,7 +164,7 @@ class FileReceiver:
         laptop = self._laptop(request)
         sha = request.match_info["sha"]
         part, meta_path = self._paths(laptop, sha)
-        if self.server.db.find_received(laptop, sha):
+        if self._already_have(laptop, sha):
             return web.json_response({"status": "done"})
         if not meta_path.exists() or not part.exists():
             raise web.HTTPNotFound(text="Нет такой загрузки")

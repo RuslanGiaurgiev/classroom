@@ -130,7 +130,7 @@ class YandexDisk:
         f = self.db.one("SELECT * FROM received WHERE id=?", (file_id,))
         if f is None:
             return False
-        if self.db.one("SELECT id FROM disk_queue WHERE received_id=? AND remote_path=? AND status!='cancelled'",
+        if self.db.one("SELECT id FROM disk_queue WHERE received_id=? AND remote_path=? AND status NOT IN ('cancelled','deleted')",
                        (file_id, remote)):
             return False
         self.db.q("DELETE FROM disk_queue WHERE received_id=? AND remote_path=?", (file_id, remote))
@@ -245,13 +245,15 @@ class YandexDisk:
         out: list[dict] = []
         while True:
             params = {"path": f"disk:/{path}", "limit": "1000", "offset": str(len(out)),
-                      "fields": "_embedded.items.name,_embedded.items.type,_embedded.total"}
+                      "fields": "_embedded.items.name,_embedded.items.type,_embedded.items.size,"
+                                "_embedded.items.modified,_embedded.total"}
             async with s.get(f"{self.api_base}/resources", params=params) as r:
                 if r.status == 404:
                     return None
                 data = (await self._check(r)).get("_embedded") or {}
             items = data.get("items") or []
-            out += [{"name": str(i.get("name", "")), "type": i.get("type")} for i in items]
+            out += [{"name": str(i.get("name", "")), "type": i.get("type"), "size": i.get("size"),
+                     "modified": i.get("modified")} for i in items]
             if not items or len(out) >= int(data.get("total") or 0):
                 return out
 
@@ -268,6 +270,45 @@ class YandexDisk:
                 return None
             return (await self._check(r)).get("sha256")
 
+    async def upload_file(self, s: aiohttp.ClientSession, plain: aiohttp.ClientSession, local: Path,
+                          base_remote: str, sha: str) -> str:
+        """Загрузить файл, ничего не перезаписывая. Возвращает итоговый путь на Диске."""
+        await self._mkdirs(s, base_remote.rpartition("/")[0])
+        for n in range(1, 50):
+            remote = _unique_remote(base_remote, n)
+            async with s.get(f"{self.api_base}/resources/upload",
+                             params={"path": f"disk:/{remote}", "overwrite": "false"}) as r:
+                if r.status == 409:
+                    # Уже есть файл с таким именем. Тот же самый? Тогда готово, иначе — суффикс.
+                    if await self._remote_sha(s, remote) == sha:
+                        return remote
+                    continue
+                link = await self._check(r)
+            with open(local, "rb") as fh:
+                async with plain.put(link["href"], data=fh) as r:
+                    await self._check(r, ok=(201, 202))
+            return remote
+        raise RuntimeError("слишком много файлов с одинаковым именем")
+
+    async def delete(self, s: aiohttp.ClientSession, path: str) -> None:
+        """В Корзину Диска (не навсегда — оттуда можно восстановить)."""
+        async with s.delete(f"{self.api_base}/resources", params={"path": f"disk:/{path}", "permanently": "false"}) as r:
+            if r.status == 404:
+                return
+            await self._check(r, ok=(202, 204))
+        self._created_dirs = {d for d in self._created_dirs if d != path and not d.startswith(path + "/")}
+        # Эти работы снова можно отправить
+        prefix = path + "/"
+        self.db.q("UPDATE disk_queue SET status='deleted', updated=? WHERE status='done'"
+                  " AND (remote_path=? OR substr(remote_path, 1, ?)=?)", (self.clock(), path, len(prefix), prefix))
+
+    async def mkdir(self, s: aiohttp.ClientSession, path: str) -> None:
+        await self._mkdirs(s, path)
+
+    async def download_link(self, s: aiohttp.ClientSession, path: str) -> str:
+        async with s.get(f"{self.api_base}/resources/download", params={"path": f"disk:/{path}"}) as r:
+            return (await self._check(r))["href"]
+
     async def _upload(self, s: aiohttp.ClientSession, plain: aiohttp.ClientSession, item: dict) -> None:
         """s — запросы к API с токеном; plain — загрузка по ссылке (токен туда не отправляем)."""
         local = Path(item["local_path"])
@@ -279,26 +320,7 @@ class YandexDisk:
             if not local.exists():
                 raise RuntimeError(f"файл не найден на Mac: {local}")
         sha = self.db.one("SELECT sha256 FROM received WHERE id=?", (item["received_id"],))["sha256"]
-        base_remote = item["remote_path"]
-        await self._mkdirs(s, base_remote.rpartition("/")[0])
-
-        for n in range(1, 50):
-            remote = _unique_remote(base_remote, n)
-            async with s.get(f"{self.api_base}/resources/upload",
-                             params={"path": f"disk:/{remote}", "overwrite": "false"}) as r:
-                if r.status == 409:
-                    # Уже есть файл с таким именем. Тот же самый? Тогда готово, иначе — суффикс.
-                    if await self._remote_sha(s, remote) == sha:
-                        break
-                    continue
-                link = await self._check(r)
-            with open(local, "rb") as fh:
-                async with plain.put(link["href"], data=fh) as r:
-                    await self._check(r, ok=(201, 202))
-            break
-        else:
-            raise RuntimeError("слишком много файлов с одинаковым именем")
-
+        remote = await self.upload_file(s, plain, local, item["remote_path"], sha)
         self.db.q("UPDATE disk_queue SET status='done', remote_path=?, last_error='', updated=? WHERE id=?",
                   (remote, self.clock(), item["id"]))
         log.info("Яндекс Диск: выгружен %s", remote)

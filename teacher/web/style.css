@@ -287,7 +287,7 @@ details.log-box summary { cursor: pointer; font-family: var(--font-head); text-t
 .closing { opacity: .4; pointer-events: none; }
 
 /* ---------- На Диск ---------- */
-.ds-form { display: grid; grid-template-columns: 1.2fr 1fr 1.4fr .6fr 2fr; gap: 10px; align-items: end; }
+.ds-form { display: grid; grid-template-columns: 1.1fr 1fr 1.3fr 1.6fr; gap: 10px; align-items: end; }
 @media (max-width: 800px) { .ds-form { grid-template-columns: 1fr 1fr; } }
 .ds-form .field input, .ds-form .field select { width: 100%; }
 .ds-list { display: grid; gap: 4px; margin-top: 8px; }
@@ -298,3 +298,15 @@ details.log-box summary { cursor: pointer; font-family: var(--font-head); text-t
 .ds-warn { color: var(--orange-dark, #b85c00); font-weight: 700; display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .ds-dest { overflow-wrap: anywhere; }
 .ds-alert { background: #FFF1E6; border: 2px solid var(--orange); border-radius: 14px; padding: 10px 12px; font-weight: 700; color: var(--orange-dark); }
+input.bad { outline: 3px solid var(--red); }
+
+/* ---------- Яндекс Диск: папки детей ---------- */
+.crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; margin: 6px 0 10px; }
+.crumb { border: 0; background: var(--soft); color: var(--forest); font-weight: 800; border-radius: 10px; padding: 5px 10px; cursor: pointer; }
+.crumb:hover { background: var(--line); }
+.disk-list { display: grid; margin-top: 10px; }
+.disk-row { display: grid; grid-template-columns: 1fr 80px 130px 36px; gap: 10px; align-items: center; padding: 6px 8px; border-top: 2px solid var(--soft); }
+.disk-row:hover { background: var(--soft); border-radius: 12px; }
+.disk-name { border: 0; background: none; text-align: left; font-size: 15px; font-weight: 700; color: var(--ink); cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 4px 0; }
+.disk-name:hover { color: var(--teal-dark); text-decoration: underline; }
+@media (max-width: 700px) { .disk-row { grid-template-columns: 1fr 36px; } .disk-row .small { display: none; } }

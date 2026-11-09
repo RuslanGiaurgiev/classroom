@@ -13,6 +13,7 @@
   let disk = { counts: {}, state: "", has_token: false };
   // Что открыто справа: {mode: "group"|"student"|"unsorted"|"recent", groupId, studentId}
   let view = { mode: "group", groupId: null, studentId: null };
+  let diskStart = null;   // с какой папки открыть «Яндекс Диск» (null — где были)
 
   const fmtSize = (b) => (b > 1048576 ? (b / 1048576).toFixed(1) + " МБ" : Math.max(1, Math.round(b / 1024)) + " КБ");
   const fmtTime = (ts) => new Date(ts * 1000).toLocaleString("ru-RU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
@@ -223,13 +224,15 @@
     const dtext = !disk.has_token ? "не подключён" : disk.state === "offline" ? `нет интернета, ждут ${c.pending || 0}`
       : disk.state === "auth_error" ? "ошибка токена" : disk.state === "working" ? `отправляю, осталось ${c.pending || 0}`
       : `отправлено ${c.done || 0}` + (c.pending ? `, в очереди ${c.pending}` : "");
-    const dbtn = el("button", { className: "side-item", title: "Настройки Яндекс Диска" }, el("span", {}, "☁️"), el("span", { className: "small" }, "Яндекс Диск: " + dtext));
-    dbtn.onclick = () => { App.showTab("settings"); if (App.openSettings) App.openSettings("disk"); };
+    const dbtn = el("button", { className: "side-item" + (view.mode === "disk" ? " active" : ""), title: "Папки детей на Яндекс Диске, связь с Диском" },
+      el("span", {}, "☁️"), el("span", { className: "small" }, el("b", {}, "Яндекс Диск"), el("br"), dtext));
+    dbtn.onclick = () => { view = { ...view, mode: "disk" }; diskStart = ""; render(); };
     side.append(dbtn);
     return side;
   }
 
   function renderMain() {
+    if (view.mode === "disk") { const b = App.diskBrowser(diskStart); diskStart = null; return b; }
     if (view.mode === "unsorted") return renderUnsorted();
     if (view.mode === "recent") return renderRecent();
     if (view.mode === "student") {
@@ -334,6 +337,14 @@
       catch (e) { fail(e.message); }
       reload();
     };
+    const onDisk = el("button", { className: "btn small", textContent: "☁️ Папка на Диске", title: "Посмотреть, удалить или добавить работы ребёнка на Яндекс Диске" });
+    onDisk.onclick = async () => {
+      try {
+        const r = await api("GET", `/ui/api/disk/student-folder?student_id=${st.id}`);
+        if (!r.folder) { fail(r.options && r.options.length ? `Подходят несколько папок: ${r.options.join(", ")} — откройте нужную в «Яндекс Диске»` : "Папку ребёнка на Диске не нашёл — она появится после первой отправки"); }
+        view = { ...view, mode: "disk" }; diskStart = r.folder || ""; render();
+      } catch (e) { fail(e.message); }
+    };
     const del = el("button", { className: "btn red small", textContent: "Удалить ученика" });
     del.onclick = async () => {
       if (!(await App.confirm(`Удалить ученика «${st.name}» из списка? Его работы на диске останутся.`, { okText: "Удалить", danger: true }))) return;
@@ -342,7 +353,7 @@
     box.append(back, el("div", { className: "box-title", style: "margin-top:8px" },
       el("div", { className: "scard", style: "--c:var(--teal);padding:0;outline:0;box-shadow:none;background:none" }, el("div", { className: "ava" }, st.name.slice(0, 1).toUpperCase())),
       el("div", {}, el("h2", {}, st.name), st.aliases.length ? el("div", { className: "muted small" }, "также подписывает: " + st.aliases.join(", ")) : null),
-      el("div", { className: "spacer" }), edit, del));
+      el("div", { className: "spacer" }), onDisk, edit, del));
     const list = el("div", {}, el("p", { className: "muted" }, "Загрузка…"));
     box.append(list);
     api("GET", `/ui/api/students/${st.id}/files`).then((r) => {

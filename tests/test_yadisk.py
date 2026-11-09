@@ -24,6 +24,7 @@ class FakeYandex:
         self.online = True
         self.uploads: dict[str, str] = {}
         self.upload_auth_headers = []
+        self.trash = []
 
     def app(self):
         app = web.Application(client_max_size=50 * 1024 * 1024)
@@ -31,6 +32,8 @@ class FakeYandex:
             web.put("/v1/disk/resources", self.mkdir),
             web.get("/v1/disk/resources", self.meta),
             web.get("/v1/disk/resources/upload", self.link),
+            web.delete("/v1/disk/resources", self.delete),
+            web.get("/v1/disk/resources/download", self.download),
             web.get("/v1/disk/", self.info),
             web.put("/upload/{id}", self.upload),
         ])
@@ -82,6 +85,21 @@ class FakeYandex:
         uid = str(len(self.uploads))
         self.uploads[uid] = p
         return web.json_response({"href": f"http://127.0.0.1:{request.url.port}/upload/{uid}", "method": "PUT"})
+
+    async def delete(self, request):
+        self.auth(request)
+        p = self.path(request)
+        assert request.query["permanently"] == "false"            # только в Корзину
+        if p not in self.dirs and p not in self.files:
+            return web.json_response({"message": "not found"}, status=404)
+        self.trash.extend(x for x in sorted(self.dirs | set(self.files)) if x == p or x.startswith(p + "/"))
+        self.dirs = {d for d in self.dirs if d != p and not d.startswith(p + "/")}
+        self.files = {f: v for f, v in self.files.items() if f != p and not f.startswith(p + "/")}
+        return web.Response(status=204)
+
+    async def download(self, request):
+        self.auth(request)
+        return web.json_response({"href": "https://downloader.example/" + self.path(request)})
 
     async def info(self, request):
         self.auth(request)
@@ -162,7 +180,7 @@ async def test_plan_and_send_into_kids_folders(env):
     assert petya["status"] == "missing" and petya["new_name"] == "Петя Сидоров"
     assert "Make Code" in plan["programs"]
 
-    body = {"group_id": gid, "date": "2026-11-08", "program": "MakeCode", "lesson": 3, "topic": " Анимация  ",
+    body = {"group_id": gid, "date": "2026-11-08", "program": "MakeCode", "folder_name": " Урок  3 ",
             "students": [{"student_id": masha["student_id"], "folder": "Маша Иванова"},
                          {"student_id": petya["student_id"], "folder": "Петя Сидоров"}]}
     status, r = await ui(server, "POST", "/ui/api/disk/send", json=body)
@@ -172,8 +190,8 @@ async def test_plan_and_send_into_kids_folders(env):
     status, r = await ui(server, "POST", "/ui/api/disk/send", json=body)
     assert r == {"queued": 2, "skipped": 0, "created": ["Петя Сидоров"]}
     await server.disk.process_queue()
-    assert set(fake.files) == {f"{ROOT}/Маша Иванова/Make Code/Урок 3 — Анимация (08.11.2026)/Маша проект.sb3",
-                               f"{ROOT}/Петя Сидоров/Make Code/Урок 3 — Анимация (08.11.2026)/Петя игра.sb3"}   # как у других детей
+    assert set(fake.files) == {f"{ROOT}/Маша Иванова/Make Code/Урок 3/Маша проект.sb3",
+                               f"{ROOT}/Петя Сидоров/Make Code/Урок 3/Петя игра.sb3"}   # как у других детей
     assert fake.upload_auth_headers == [None, None]               # токен не уходит на адрес загрузки
 
     # Второй раз — ничего не дублируется; выбор папок и программа запомнились
@@ -181,7 +199,7 @@ async def test_plan_and_send_into_kids_folders(env):
     assert r["queued"] == 0 and r["skipped"] == 2
     _, plan = await ui(server, "GET", f"/ui/api/disk/plan?group_id={gid}&date=2026-11-08")
     assert {x["name"]: x["status"] for x in plan["students"]}["Петя Сидоров"] == "found"
-    assert plan["group_program"] == "Make Code" and plan["topics"] == ["Анимация"]
+    assert plan["group_program"] == "Make Code" and plan["topics"] == ["Урок 3"]
     assert all(f["sent"] for x in plan["students"] if x["name"] != "Орлов Коля" for f in x["files"])
 
 
@@ -193,7 +211,7 @@ async def test_existing_lesson_and_direction_folders_reused(env):
     kolya = next(x for x in plan["students"] if x["name"] == "Орлов Коля")
     assert kolya["folder"] == "Коля Орлов" and kolya["program_path"] == "Робототехника/Tinkercad"
     await ui(server, "POST", "/ui/api/disk/send", json={
-        "group_id": gid, "date": "2026-11-08", "program": "Tinkercad", "lesson": 4, "topic": "Светофор",
+        "group_id": gid, "date": "2026-11-08", "program": "Tinkercad", "folder_name": "урок 4",
         "students": [{"student_id": kolya["student_id"], "folder": "Коля Орлов"}]})
     await server.disk.process_queue()
     assert list(fake.files) == [f"{ROOT}/Коля Орлов/Робототехника/Tinkercad/Урок 4/Коля модель.stl"]
@@ -280,11 +298,80 @@ async def test_wrong_root_is_flagged_and_program_spelling_kept(env):
     assert not plan["root_suspicious"] and plan["program"] == "Tinkercad"   # написание как у детей на Диске
     petya = next(x for x in plan["students"] if x["name"] == "Петя Сидоров")
     await ui(server, "POST", "/ui/api/disk/send", json={
-        "group_id": gid, "date": "2026-11-08", "program": "TinkerCAD", "lesson": 1, "topic": "",
+        "group_id": gid, "date": "2026-11-08", "program": "TinkerCAD", "folder_name": "Урок 1",
         "students": [{"student_id": petya["student_id"], "folder": "Петя Сидоров"}]})
     await server.disk.process_queue()
-    assert list(fake.files) == [f"{ROOT}/Петя Сидоров/Tinkercad/Урок 1 (08.11.2026)/Петя игра.sb3"]
+    assert list(fake.files) == [f"{ROOT}/Петя Сидоров/Tinkercad/Урок 1/Петя игра.sb3"]
 
     server.storage.update_settings(disk_root="Пустая")                    # не та папка: детей в ней нет
     _, plan = await ui(server, "GET", f"/ui/api/disk/plan?group_id={gid}&date=2026-11-08&program=Make Code")
     assert plan["root_suspicious"] and all(x["status"] == "missing" for x in plan["students"])
+
+
+async def test_lesson_folder_reused_by_number(env):
+    """«Урок 2» кладётся в уже существующую «Урок 2 — Цикл (01.11.2026)», а не рядом."""
+    server, fake, tokens = env
+    tokens.token = TOKEN
+    gid = await setup_lesson(server, fake)
+    masha = next(x for x in (await ui(server, "GET", f"/ui/api/disk/plan?group_id={gid}&date=2026-11-08&program=Make Code"))[1]["students"]
+                 if x["name"].startswith("Иванова"))
+    assert "Урок 2 — Цикл (01.11.2026)" in masha["lesson_dirs"]
+    await ui(server, "POST", "/ui/api/disk/send", json={
+        "group_id": gid, "date": "2026-11-08", "program": "Make Code", "folder_name": "Урок 2",
+        "students": [{"student_id": masha["student_id"], "folder": "Маша Иванова"}]})
+    await server.disk.process_queue()
+    assert list(fake.files) == [f"{ROOT}/Маша Иванова/Make Code/Урок 2 — Цикл (01.11.2026)/Маша проект.sb3"]
+    status, r = await ui(server, "POST", "/ui/api/disk/send", json={
+        "group_id": gid, "date": "2026-11-08", "program": "Make Code", "folder_name": "Урок/3", "students": []})
+    assert status == 400
+
+
+async def test_browse_delete_and_resend(env):
+    server, fake, tokens = env
+    tokens.token = TOKEN
+    gid = await setup_lesson(server, fake)
+    _, plan = await ui(server, "GET", f"/ui/api/disk/plan?group_id={gid}&date=2026-11-08&program=Make Code")
+    masha = next(x for x in plan["students"] if x["name"].startswith("Иванова"))
+    body = {"group_id": gid, "date": "2026-11-08", "program": "Make Code", "folder_name": "Урок 3",
+            "students": [{"student_id": masha["student_id"], "folder": "Маша Иванова"}]}
+    await ui(server, "POST", "/ui/api/disk/send", json=body)
+    await server.disk.process_queue()
+
+    status, ls = await ui(server, "GET", "/ui/api/disk/ls?path=Маша Иванова/Make Code")
+    assert status == 200 and [i["name"] for i in ls["items"]] == ["Урок 1", "Урок 2 — Цикл (01.11.2026)", "Урок 3"]
+    status, r = await ui(server, "GET", "/ui/api/disk/ls?path=../секрет")
+    assert status == 400
+    status, r = await ui(server, "POST", "/ui/api/disk/delete", json={"path": ""})
+    assert status == 400 and not fake.trash                         # папку школы целиком — нельзя
+
+    # Удалили урок на Диске — его можно отправить заново
+    status, r = await ui(server, "POST", "/ui/api/disk/delete", json={"path": "Маша Иванова/Make Code/Урок 3"})
+    assert status == 200 and f"{ROOT}/Маша Иванова/Make Code/Урок 3/Маша проект.sb3" in fake.trash
+    _, plan = await ui(server, "GET", f"/ui/api/disk/plan?group_id={gid}&date=2026-11-08&program=Make Code")
+    assert not next(x for x in plan["students"] if x["name"].startswith("Иванова"))["files"][0]["sent"]
+    _, r = await ui(server, "POST", "/ui/api/disk/send", json=body)
+    assert r["queued"] == 1
+    await server.disk.process_queue()
+    assert f"{ROOT}/Маша Иванова/Make Code/Урок 3/Маша проект.sb3" in fake.files
+
+    status, r = await ui(server, "GET", "/ui/api/disk/link?path=Маша Иванова/Make Code/Урок 3/Маша проект.sb3")
+    assert r["href"].startswith("https://downloader.example/")
+
+
+async def test_manual_upload_and_mkdir(env):
+    import aiohttp
+    server, fake, tokens = env
+    tokens.token = TOKEN
+    mkdirs(fake, f"{ROOT}/Маша Иванова")
+    status, _ = await ui(server, "POST", "/ui/api/disk/mkdir", json={"path": "Маша Иванова", "name": "Tinkercad"})
+    assert status == 200 and f"{ROOT}/Маша Иванова/Tinkercad" in fake.dirs
+    status, r = await ui(server, "POST", "/ui/api/disk/mkdir", json={"path": "Маша Иванова", "name": "../x"})
+    assert status == 400
+    for content in (b"model", b"other"):                             # второй — то же имя, другое содержимое
+        form = aiohttp.FormData()
+        form.add_field("file", content, filename="модель.stl")
+        status, r = await ui(server, "POST", "/ui/api/disk/upload?path=Маша Иванова/Tinkercad", data=form)
+        assert status == 200, r
+    assert fake.files[f"{ROOT}/Маша Иванова/Tinkercad/модель.stl"] == b"model"
+    assert fake.files[f"{ROOT}/Маша Иванова/Tinkercad/модель (2).stl"] == b"other"   # ничего не перезаписали
+    assert not list(server.storage.data_dir.glob("disk-upload-*"))  # временные файлы убраны

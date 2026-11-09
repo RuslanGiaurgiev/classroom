@@ -7,9 +7,15 @@
   const ruDate = (d) => d.split("-").reverse().join(".");
   const safe = (s) => s.replace(/[\\/:*?"<>|\x00-\x1f]/g, "_").trim();
 
-  function lessonName(n, topic, date) {
-    topic = topic.trim().replace(/\s+/g, " ");
-    return safe(topic ? `Урок ${n} — ${topic} (${ruDate(date)})` : `Урок ${n} (${ruDate(date)})`);
+  const LESSON_RE = /^\s*урок\s*(\d{1,3})(?!\d)/i;
+  // Куда у ребёнка попадёт урок: папка с таким же названием, иначе с тем же номером урока, иначе новая
+  function resolveLessonDir(wanted, st) {
+    const w = wanted.trim().toLowerCase();
+    const same = (st.lesson_dirs || []).find((d) => d.trim().toLowerCase() === w);
+    if (same) return { name: same, exists: true };
+    const m = wanted.match(LESSON_RE);
+    const byNum = m && st.lessons && st.lessons[String(Number(m[1]))];
+    return byNum ? { name: byNum, exists: true } : { name: wanted.trim().replace(/\s+/g, " "), exists: false };
   }
 
   async function diskSendDialog(groupId, date) {
@@ -21,9 +27,9 @@
     const prog = el("input", { type: "text", placeholder: "например, Make Code" });
     prog.setAttribute("list", "dsPrograms");
     const progList = el("datalist", { id: "dsPrograms" });
-    const lesson = el("input", { type: "number", min: 1, max: 300, style: "width:90px" });
-    const topic = el("input", { type: "text", placeholder: "например, Мигающее сердце", maxLength: 100 });
-    topic.setAttribute("list", "dsTopics");
+    const lesson = el("input", { type: "text", placeholder: "например, Урок 1", maxLength: 100 });
+    lesson.setAttribute("list", "dsTopics");
+    const topic = lesson;   // одно поле: «тема» — это и есть название папки урока
     const topicList = el("datalist", { id: "dsTopics" });
     const info = el("p", { className: "muted small" });
     const list = el("div", { className: "ds-list" });
@@ -43,9 +49,9 @@
         if (seq !== loadSeq) return;
         plan = p;
         progList.replaceChildren(...p.programs.map((n) => el("option", { value: n })));
-        topicList.replaceChildren(...p.topics.map((n) => el("option", { value: n })));
+        topicList.replaceChildren(...[...new Set([`Урок ${p.lesson_suggest}`, ...p.topics])].map((n) => el("option", { value: n })));
         if (!prog.value.trim() && p.group_program) { prog.value = p.group_program; return load(); }
-        if (!lessonTouched && p.program) lesson.value = p.lesson_suggest;
+        if (!lessonTouched && p.program) lesson.value = `Урок ${p.lesson_suggest}`;
         render();
       } catch (e) {
         if (seq !== loadSeq) return;
@@ -103,34 +109,35 @@
 
     function upd() {
       if (!plan) return;
-      const n = Number(lesson.value);
+      const wanted = lesson.value.trim();
+      const bad = /[\\/:*?"<>|]/.test(wanted);
       let count = 0;
       for (const r of rows) {
         const folder = r.folder();
         const progPath = r.st.program_path || safe(prog.value.trim());
-        const existing = r.st.lessons && r.st.lessons[String(n)];
-        r.dest.textContent = plan.program && n ? `→ ${folder || "…"} / ${progPath} / ${existing ? existing + " (уже есть — добавлю туда)" : lessonName(n, topic.value, plan.date)}` : "";
+        const ld = resolveLessonDir(wanted, r.st);
+        r.dest.textContent = plan.program && wanted ? `→ ${folder || "…"} / ${progPath} / ${ld.name}${ld.exists ? " (уже есть — добавлю туда)" : ""}` : "";
         const ready = r.include.checked && folder && (!r.create || !r.isNew() || r.create.checked);
         if (ready) count += r.st.files.filter((f) => !f.sent).length;
       }
-      sendBtn.disabled = !count || !prog.value.trim() || !(n >= 1);
+      sendBtn.disabled = !count || !prog.value.trim() || !wanted || bad;
+      lesson.classList.toggle("bad", bad);
       sendBtn.textContent = count ? `☁️ Отправить (${count})` : "☁️ Отправить";
     }
 
     async function send() {
-      const n = Number(lesson.value);
       const isNew = (r) => r.create && r.isNew();
       const missingNoConfirm = rows.filter((r) => r.include.checked && isNew(r) && !r.create.checked);
       const chosen = rows.filter((r) => r.include.checked && r.folder() && (!isNew(r) || r.create.checked));
       const created = chosen.filter(isNew).map((r) => r.folder());
-      let text = `Отправить работы на Диск?\nПрограмма: ${prog.value.trim()}, урок ${n}${topic.value.trim() ? " — " + topic.value.trim() : ""}.`;
+      let text = `Отправить работы на Диск?\nПрограмма: ${prog.value.trim()}, папка урока: «${lesson.value.trim()}».`;
       if (created.length) text += `\n\nБудут созданы новые папки детей:\n• ${created.join("\n• ")}`;
       if (missingNoConfirm.length) text += `\n\nНе отправляются (папка не подтверждена): ${missingNoConfirm.map((r) => r.st.name).join(", ")}`;
       if (!(await App.confirm(text, { okText: "Отправить", title: "☁️ На Диск" }))) return false;
       sendBtn.disabled = true;
       try {
         const r = await api("POST", "/ui/api/disk/send", {
-          group_id: Number(gSel.value), date: dIn.value, program: prog.value.trim(), lesson: n, topic: topic.value,
+          group_id: Number(gSel.value), date: dIn.value, program: prog.value.trim(), folder_name: lesson.value.trim(),
           students: chosen.map((r) => ({ student_id: r.st.student_id, folder: r.folder(), create: isNew(r) })),
         });
         toast(`На Диск: отправляю ${r.queued} ${r.queued === 1 ? "работу" : "работ"}` + (r.created.length ? `, новых папок: ${r.created.length}` : "") + (r.skipped ? `, уже были: ${r.skipped}` : ""), "ok");
@@ -143,7 +150,6 @@
     gSel.onchange = () => { prog.value = ""; lessonTouched = false; load(); };
     dIn.onchange = load;
     lesson.oninput = () => { lessonTouched = true; upd(); };
-    topic.oninput = upd;
 
     const done = dialog();
     function dialog() {
@@ -151,7 +157,7 @@
         title: "☁️ Работы на Яндекс Диск",
         wide: true,
         body: [
-          el("div", { className: "ds-form" }, field("Группа", gSel), field("Дата урока", dIn), field("Программа", prog), field("Урок №", lesson), field("Тема", topic)),
+          el("div", { className: "ds-form" }, field("Группа", gSel), field("Дата урока", dIn), field("Программа", prog), field("Папка урока (тема)", lesson)),
           progList, topicList, info, list,
           el("p", { className: "muted small" }, "На Диске ничего не удаляется и не перезаписывается. Новые папки детей создаются только с вашей галочкой."),
         ],

@@ -83,8 +83,9 @@ def test_ledger_duplicates_and_baseline(tmp_path):
     assert led.add_found("downloads", "кот.sb3", 10, 2, "a" * 64) == "pending"
     assert led.add_found("downloads", "кот.sb3", 10, 2, "a" * 64) == "known"
     led.mark_confirmed_by_sha("a" * 64)
-    # Тот же файл под другим именем — уже у учителя, повторно не отправляем
-    assert led.add_found("desktop/Проекты", "копия кота.sb3", 10, 3, "a" * 64) == "confirmed"
+    # Тот же файл под другим именем — спрашиваем учителя (он ответит «уже есть» или примет заново,
+    # если прежнюю копию удалил)
+    assert led.add_found("desktop/Проекты", "копия кота.sb3", 10, 3, "a" * 64) == "pending"
     # Изменённая версия (другое время/хэш) — новая запись к отправке
     assert led.add_found("downloads", "кот.sb3", 12, 4, "b" * 64) == "pending"
 
@@ -387,3 +388,19 @@ async def test_delete_junk_from_unsorted(teacher, tmp_path):
     assert Path(keep["project_path"]).exists()
     # Учитель файлы получил — «Конец урока» сможет убрать их и с ноутбука
     assert len(teacher.db.confirmed_shas("12")) == 4
+
+
+async def test_same_content_saved_again_after_teacher_deleted_it(teacher, tmp_path):
+    """Учитель удалил работу, ребёнок сохранил то же самое ещё раз — работа должна прийти снова."""
+    platform, core = make_core(tmp_path, "5")
+    teacher.sorter.trash_dir = lambda: tmp_path / "mac-trash"
+    _, client, task = await start_agent(teacher, tmp_path, "5", core=core, platform=platform)
+    d = platform.known_folder("downloads")
+    sha = hashlib.sha256(b"minion").hexdigest()
+    write(d / "миньон.stl", b"minion", mtime=1_700_000_000)
+    await wait_for(lambda: teacher.db.find_received("5", sha), timeout=10)
+    assert teacher.sorter.delete_file(teacher.db.find_received("5", sha)["id"])
+    write(d / "миньон (1).stl", b"minion", mtime=1_700_000_100)          # повторный экспорт того же
+    await wait_for(lambda: (teacher.db.find_received("5", sha) or {}).get("status") not in (None, "deleted"), timeout=10)
+    assert teacher.db.find_received("5", sha)["name"] == "миньон (1).stl"
+    await stop_agent(client, task)
