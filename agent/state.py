@@ -9,7 +9,7 @@ import base64
 import json
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from agent.platform.base import Platform
@@ -24,6 +24,16 @@ class AgentState:
     host: str
     port: int
     token: str
+    # Последние адреса учителя (в разных сетях: роутер, точка доступа) — пробуем все
+    known_hosts: list[tuple[str, int]] = field(default_factory=list)
+
+    MAX_KNOWN = 6
+
+    def remember(self, host: str, port: int) -> None:
+        """Запомнить рабочий адрес учителя (самый свежий — первым)."""
+        self.host, self.port = host, port
+        self.known_hosts = [(host, port)] + [a for a in self.known_hosts if a != (host, port)]
+        self.known_hosts = self.known_hosts[:self.MAX_KNOWN]
 
     @staticmethod
     def path(platform: Platform) -> Path:
@@ -36,6 +46,7 @@ class AgentState:
             "laptop_number": self.laptop_number,
             "host": self.host,
             "port": self.port,
+            "known_hosts": [[h, p] for h, p in self.known_hosts],
             "token_protected": base64.b64encode(platform.protect(self.token.encode())).decode(),
         }
         tmp = path.with_suffix(".tmp")
@@ -56,6 +67,7 @@ class AgentState:
                 host=data["host"],
                 port=int(data["port"]),
                 token=token,
+                known_hosts=[(str(h), int(p)) for h, p in data.get("known_hosts", [])][:cls.MAX_KNOWN],
             )
         except Exception:
             # Например, файл скопировали с другого компьютера — DPAPI его не расшифрует

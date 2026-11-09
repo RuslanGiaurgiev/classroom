@@ -22,7 +22,7 @@ from typing import Callable
 
 import aiohttp
 
-from agent.discovery import broadcast_discover
+from agent.discovery import broadcast_discover, sweep_targets
 from agent.platform.base import Platform
 from agent.state import AgentState
 from shared.protocol import DEFAULT_PORT, PROTOCOL_VERSION
@@ -92,6 +92,9 @@ class PairingFlow:
             if self.manual_address:
                 return self.manual_address
             found = await broadcast_discover(self.discover_port, targets=self.discover_targets)
+            if not found and self.discover_targets is None and attempts % 2 == 1:
+                # Широковещание не прошло (точка доступа телефона, VPN) — опрашиваем адреса сети напрямую
+                found = await broadcast_discover(self.discover_port, targets=sweep_targets())
             if found:
                 return found[0]["ip"], int(found[0]["port"])
             attempts += 1

@@ -46,20 +46,53 @@ async def find_teacher(teacher_id: str, timeout: float = 3.0, unicast: bool = Tr
 
 # ---------- Широковещательный поиск (UDP) ----------
 
-def _broadcast_targets() -> list[str]:
-    """
-    Общий широковещательный адрес + адреса вида 192.168.3.255 для каждой своей сети
-    (если на ноутбуке несколько адаптеров, 255.255.255.255 уходит только в один).
-    """
-    targets = ["255.255.255.255"]
+def _local_ips() -> list[str]:
     try:
         ips = {info[4][0] for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)}
     except OSError:
         ips = set()
-    for ip in sorted(ips):
-        if not ip.startswith(("127.", "169.254.")):
-            targets.append(ip.rsplit(".", 1)[0] + ".255")
+    # Адрес, с которого реально уходит трафик (getaddrinfo на Windows иногда его не показывает)
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("10.255.255.255", 1))
+        ips.add(s.getsockname()[0])
+        s.close()
+    except OSError:
+        pass
+    return sorted(ip for ip in ips if not ip.startswith(("127.", "169.254.", "0.")))
+
+
+def _broadcast_targets() -> list[str]:
+    """
+    Общий широковещательный адрес + широковещательные адреса своих сетей. Размер сети (маску)
+    узнавать долго, поэтому шлём на адреса для масок от /24 до /30: дома и в школе сеть обычно /24
+    (192.168.3.255), а у точки доступа iPhone — /28 (172.20.10.15). Лишние пакеты безвредны.
+    """
+    import ipaddress
+    targets = ["255.255.255.255"]
+    for ip in _local_ips():
+        for prefix in range(24, 31):
+            b = str(ipaddress.ip_network(f"{ip}/{prefix}", strict=False).broadcast_address)
+            if b not in targets and b != ip:
+                targets.append(b)
     return targets
+
+
+def sweep_targets(max_hosts: int = 254) -> list[str]:
+    """Все адреса своих небольших частных сетей (/24) — для прямого опроса, если широковещание не проходит."""
+    import ipaddress
+    out: list[str] = []
+    for ip in _local_ips():
+        addr = ipaddress.ip_address(ip)
+        if not addr.is_private:
+            continue
+        for host in ipaddress.ip_network(f"{ip}/24", strict=False).hosts():
+            h = str(host)
+            if h != ip and h not in out:
+                out.append(h)
+            if len(out) >= max_hosts * 2:
+                return out
+    return out
 
 
 class _Collector(asyncio.DatagramProtocol):
@@ -77,6 +110,45 @@ class _Collector(asyncio.DatagramProtocol):
             pass
 
 
+def _discover_sync(port: int, timeout: float, targets: list[str]) -> list[dict]:
+    """
+    Обычный сокет в отдельном потоке, а не asyncio: на Windows ответ «порт закрыт» от соседнего
+    устройства (ICMP) приходит в сокет ошибкой WinError 10054, и asyncio-сокет после неё перестаёт
+    принимать ответы. Здесь такие ошибки просто пропускаем.
+    """
+    import time
+    collector = _Collector()
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    except OSError as e:
+        log.debug("UDP-поиск: ошибка: %s", e)
+        return []
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        sock.bind(("0.0.0.0", 0))
+        sock.settimeout(0.1)
+        for _ in range(2):  # дважды — на случай потери пакета в Wi-Fi
+            for t in targets:
+                try:
+                    sock.sendto(DISCOVERY_REQUEST, (t, port))
+                except OSError as e:
+                    log.debug("UDP-поиск: не удалось отправить на %s: %s", t, e)
+            end = time.monotonic() + timeout / 2
+            while time.monotonic() < end:
+                try:
+                    data, addr = sock.recvfrom(4096)
+                except socket.timeout:
+                    continue
+                except OSError:
+                    continue  # WinError 10054 и т.п. — ответ «порт закрыт» от другого устройства
+                collector.datagram_received(data, addr)
+    except OSError as e:
+        log.debug("UDP-поиск: ошибка: %s", e)
+    finally:
+        sock.close()
+    return collector.found
+
+
 async def broadcast_discover(
     port: int = DEFAULT_PORT,
     timeout: float = 1.5,
@@ -85,26 +157,6 @@ async def broadcast_discover(
     """
     Отправить в сеть «где учитель?» и собрать ответы за timeout секунд.
     Возвращает список {"ip", "port", "teacher_id", "v"}.
-    targets — куда слать (по умолчанию широковещательный адрес; в тестах — 127.0.0.1).
+    targets — куда слать (по умолчанию широковещательные адреса; для прямого опроса — все адреса сети).
     """
-    loop = asyncio.get_running_loop()
-    collector = _Collector()
-    transport = None
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        sock.bind(("0.0.0.0", 0))
-        transport, _ = await loop.create_datagram_endpoint(lambda: collector, sock=sock)
-        for _ in range(2):  # дважды — на случай потери пакета в Wi-Fi
-            for t in targets or _broadcast_targets():
-                try:
-                    transport.sendto(DISCOVERY_REQUEST, (t, port))
-                except OSError as e:
-                    log.debug("UDP-поиск: не удалось отправить на %s: %s", t, e)
-            await asyncio.sleep(timeout / 2)
-    except OSError as e:
-        log.debug("UDP-поиск: ошибка: %s", e)
-    finally:
-        if transport:
-            transport.close()
-    return collector.found
+    return await asyncio.to_thread(_discover_sync, port, timeout, targets or _broadcast_targets())

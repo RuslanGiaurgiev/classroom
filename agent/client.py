@@ -13,7 +13,7 @@ import aiohttp
 
 from agent import __version__
 from agent.core import AgentCore
-from agent.discovery import broadcast_discover, find_teacher
+from agent.discovery import broadcast_discover, find_teacher, sweep_targets
 from agent.platform.base import Platform
 from agent.state import AgentState
 from shared.protocol import (
@@ -119,14 +119,21 @@ class AgentClient:
             found = await find_teacher(self.state.teacher_id)
             found += [(f["ip"], int(f["port"])) for f in await broadcast_discover(self.state.port)
                       if f.get("teacher_id") == self.state.teacher_id]
+            if not found:
+                # Широковещание и mDNS не прошли (точка доступа телефона, VPN) — спрашиваем каждый адрес
+                # своей сети напрямую: обычные соединения в таких сетях работают
+                found += [(f["ip"], int(f["port"])) for f in
+                          await broadcast_discover(self.state.port, targets=sweep_targets())
+                          if f.get("teacher_id") == self.state.teacher_id]
             for addr in found:
                 if addr not in result:
                     result.append(addr)
             if result and result[0] != (self.state.host, self.state.port):
                 log.info("Учитель найден на %s", result)
-        last = (self.state.host, self.state.port)
-        if last not in result:
-            result.append(last)
+        # Известные адреса: последний и прежние (другие сети — роутер, точка доступа)
+        for addr in [(self.state.host, self.state.port), *self.state.known_hosts]:
+            if addr not in result:
+                result.append(addr)
         return result
 
     async def _session(self, host: str, port: int) -> bool:
@@ -158,8 +165,9 @@ class AgentClient:
                     return False
 
                 # Запоминаем рабочий адрес — пригодится, если mDNS не сработает
-                if (host, port) != (self.state.host, self.state.port):
-                    self.state.host, self.state.port = host, port
+                if (host, port) != (self.state.host, self.state.port) or \
+                        (self.state.known_hosts[:1] != [(host, port)]):
+                    self.state.remember(host, port)
                     self.state.save(self.platform)
                 log.info("На связи с учителем %s:%s как ноутбук %s", host, port, self.state.laptop_number)
                 self.backoff.reset()
