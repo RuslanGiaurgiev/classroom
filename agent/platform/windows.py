@@ -324,6 +324,20 @@ class WindowsPlatform(Platform):
             parts.append("не было запущено: " + ", ".join(absent))
         return "; ".join(parts)
 
+    # ---------- Что открыто ----------
+
+    def list_open(self) -> dict:
+        from agent.platform import win_open
+        return win_open.list_open()
+
+    def close_window(self, window: int, force: bool) -> str:
+        from agent.platform import win_open
+        return win_open.close_window_safe(window, force)
+
+    def close_tab(self, window: int, title: str, index: int) -> str:
+        from agent.platform import win_open
+        return win_open.close_tab(window, title, index)
+
     def spawn_overlay(self, spec: dict):
         # Управляющий файл: пока он есть — окно на экране. Удалили — окно закрылось само.
         ctl_dir = self.data_dir() / "overlay"

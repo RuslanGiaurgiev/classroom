@@ -106,8 +106,9 @@ label.check input { width: 22px; height: 22px; accent-color: var(--teal); }
 .online-big { font-family: var(--font-head); font-size: 15px; color: var(--forest); }
 
 /* ---------- Класс: карточки действий ---------- */
-.acts { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 16px; }
-@media (max-width: 1050px) { .acts { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.acts { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 14px; }
+@media (max-width: 1200px) { .acts { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+@media (max-width: 700px) { .acts { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .btn.mint { background: var(--mint); box-shadow: 0 5px 0 var(--forest); }
 .btn.mint:active { box-shadow: 0 1px 0 var(--forest); }
 #projectsRoot { display: grid; gap: 20px; }
@@ -257,3 +258,30 @@ details.log-box summary { cursor: pointer; font-family: var(--font-head); text-t
 .el-row b { min-width: 140px; }
 .el-row.warning, .el-row.error { color: var(--red); }
 .el-row.done { color: var(--mint); }
+
+/* ---------- Что открыто ---------- */
+.ow-top { display: flex; gap: 10px; align-items: center; margin-bottom: 6px; }
+.ow-filter { flex: 1; min-width: 0; }
+.ow-root { display: grid; gap: 14px; margin-top: 10px; }
+.ow-laptop { border: 3px solid var(--line); border-radius: 20px; padding: 12px 14px; }
+.ow-laptop.err { border-color: var(--red); }
+.ow-head { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; flex-wrap: wrap; }
+.ow-head .spacer { flex: 1; }
+.ow-window { border-top: 2px solid var(--soft); padding: 8px 0; }
+.ow-window:first-child { border-top: 0; }
+.ow-win { display: flex; align-items: center; gap: 10px; }
+.ow-win.min { opacity: .75; }
+.ow-ico { font-size: 22px; width: 30px; text-align: center; flex: none; }
+.ow-text { flex: 1; min-width: 0; }
+.ow-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+.ow-win .ow-title { color: var(--muted); font-size: 13px; }
+.ow-url { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--teal-dark); }
+.ow-tabs { margin: 6px 0 0 40px; display: grid; gap: 2px; }
+.ow-tab { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 12px; }
+.ow-tab:hover { background: var(--soft); }
+.ow-tab.active { background: var(--soft); font-weight: 700; }
+.ow-dot { width: 12px; color: var(--mint); flex: none; }
+.ow-x { border: 0; background: transparent; color: var(--red); font-size: 15px; font-weight: 900; cursor: pointer; width: 30px; height: 30px; border-radius: 50%; flex: none; }
+.ow-x:hover { background: var(--red); color: #fff; }
+.ow-x:focus-visible { outline: 3px solid var(--orange); }
+.closing { opacity: .4; pointer-events: none; }

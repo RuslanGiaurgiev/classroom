@@ -123,6 +123,11 @@ def selftest(out_file: str) -> int:
             importlib.import_module(mod)
         if sys.platform == "win32":
             importlib.import_module("agent.platform.windows")
+            # Список окон и UI Automation (comtypes) работают в собранном exe
+            from agent.platform import win_open
+            win_open.list_open()
+            if win_open._uia() is None:
+                raise RuntimeError(win_open._uia_error)
         import base64
 
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey

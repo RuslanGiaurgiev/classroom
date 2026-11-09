@@ -133,6 +133,8 @@ class TeacherServer:
             web.post("/ui/api/pair-requests/{id}/reject", self.handle_ui_reject),
             web.delete("/ui/api/laptops/{number}", self.handle_ui_unpair),
             web.post("/ui/api/laptops/{number}/rename", self.handle_ui_rename),
+            web.get("/ui/api/laptops/{number}/open", self.handle_ui_list_open),
+            web.post("/ui/api/laptops/{number}/close", self.handle_ui_close_open),
             web.post("/ui/api/commands", self.handle_ui_command),
             web.put("/ui/api/settings", self.handle_ui_settings),
             web.post("/ui/api/open-url", self.handle_ui_open_url),
@@ -703,6 +705,47 @@ class TeacherServer:
         await self.broadcast_state()
         return web.json_response({"removed": removed})
 
+    # ---------- Что открыто на ноутбуке ----------
+
+    async def _ask_agent(self, number: str, action: Action, params: dict, timeout: float) -> dict:
+        """Команда одному ноутбуку с ожиданием ответа; ошибки — сразу HTTP-ответом для панели."""
+        if number not in self.agents:
+            raise web.HTTPConflict(text=json.dumps({"error": f"Ноутбук {number} не на связи"}, ensure_ascii=False),
+                                   content_type="application/json")
+        try:
+            r = await self.command_and_wait(number, action, params, timeout)
+        except ProtocolError as e:
+            raise web.HTTPBadRequest(text=json.dumps({"error": str(e)}, ensure_ascii=False),
+                                     content_type="application/json") from e
+        if r is None:
+            raise web.HTTPGatewayTimeout(text=json.dumps({"error": f"Ноутбук {number} не ответил"}, ensure_ascii=False),
+                                         content_type="application/json")
+        if not r.get("ok"):
+            msg = str(r.get("message", ""))[:300] or "ошибка"
+            if "Неизвестное действие" in msg:
+                msg = "На ноутбуке старая версия агента — обновите его (вкладка «Настройки» → обновления)"
+            raise web.HTTPBadGateway(text=json.dumps({"error": msg}, ensure_ascii=False), content_type="application/json")
+        return r
+
+    async def handle_ui_list_open(self, request: web.Request) -> web.Response:
+        number = request.match_info["number"]
+        r = await self._ask_agent(number, Action.LIST_OPEN, {}, 30)
+        data = r.get("data") if isinstance(r.get("data"), dict) else {}
+        return web.json_response({"number": number, "windows": _clean_windows(data.get("windows")),
+                                  "tabs_error": str(data.get("tabs_error") or "")[:200], "time": time.time()})
+
+    async def handle_ui_close_open(self, request: web.Request) -> web.Response:
+        number = request.match_info["number"]
+        body = await request.json()
+        if body.get("kind") == "tab":
+            action, params = Action.CLOSE_TAB, {"window": body.get("window"), "title": body.get("title", ""),
+                                                "index": body.get("index", 0)}
+        else:
+            action, params = Action.CLOSE_WINDOW, {"window": body.get("window"), "force": body.get("force") is True}
+        r = await self._ask_agent(number, action, params, 25)
+        log.info("Ноутбук %s: %s → %s", number, action.value, r.get("message"))
+        return web.json_response({"ok": True, "message": str(r.get("message", ""))[:300]})
+
     async def handle_ui_command(self, request: web.Request) -> web.Response:
         body = await request.json()
         try:
@@ -733,6 +776,23 @@ class TeacherServer:
 
     async def broadcast_state(self) -> None:
         await self.broadcast_event({"kind": "state", **self.state_snapshot()})
+
+
+def _clean_windows(raw) -> list[dict]:
+    """Список окон от агента — только ожидаемые поля и разумной длины."""
+    out = []
+    for w in raw if isinstance(raw, list) else []:
+        if not isinstance(w, dict) or not isinstance(w.get("id"), int) or isinstance(w.get("id"), bool):
+            continue
+        tabs = []
+        for t in w.get("tabs") if isinstance(w.get("tabs"), list) else []:
+            if isinstance(t, dict) and isinstance(t.get("index"), int):
+                tabs.append({"title": str(t.get("title") or "")[:300], "index": t["index"],
+                             "active": t.get("active") is True, "url": str(t.get("url") or "")[:500]})
+        out.append({"id": w["id"], "title": str(w.get("title") or "")[:300], "app": str(w.get("app") or "")[:80],
+                    "process": str(w.get("process") or "")[:80], "browser": w.get("browser") is True,
+                    "minimized": w.get("minimized") is True, "tabs": tabs[:200]})
+    return out[:100]
 
 
 def _sort_key(number: str):

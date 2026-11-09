@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 
 from agent.platform.base import Platform
-from shared.protocol import BROWSER_TITLES, Browser
+from shared.protocol import BROWSER_TITLES, PROTECTED_PROCESSES, Browser, ProtocolError
 
 log = logging.getLogger(__name__)
 
@@ -56,6 +56,15 @@ class FakePlatform(Platform):
         self.mutex_held = True
         self.spawned: list[tuple[Path, list[str]]] = []
         self.on_spawn_agent = None   # тест задаёт, что «делает» новая версия
+        self.open_windows: list[dict] = [
+            {"id": 101, "title": "Scratch 3.0 - Google Chrome", "app": "Google Chrome", "process": "chrome.exe",
+             "browser": True, "tabs": [
+                 {"title": "Scratch 3.0", "index": 0, "active": True, "url": "scratch.mit.edu/projects/editor"},
+                 {"title": "YouTube", "index": 1, "active": False, "url": ""},
+             ]},
+            {"id": 202, "title": "Безымянный — Paint", "app": "Paint", "process": "mspaint.exe",
+             "browser": False, "tabs": []},
+        ]
 
     def username(self) -> str:
         return self._username
@@ -122,6 +131,40 @@ class FakePlatform(Platform):
         self.running_processes -= {n.lower() for n in closed}
         log.info("[%s] закрыть %s → закрыто %s", self.label, names, closed)
         return "закрыто: " + (", ".join(closed) or "ничего не было запущено")
+
+    # «Открытые окна»: тест может поменять список
+    def list_open(self) -> dict:
+        self.actions.append(("list_open",))
+        return {"windows": [dict(w, tabs=[dict(t) for t in w.get("tabs", [])]) for w in self.open_windows],
+                "tabs_error": ""}
+
+    def _window(self, window: int) -> dict:
+        for w in self.open_windows:
+            if w["id"] == window:
+                return w
+        raise ProtocolError("окно уже закрыто")
+
+    def close_window(self, window: int, force: bool) -> str:
+        self.actions.append(("close_window", window, force))
+        w = self._window(window)
+        if w["process"].lower() in PROTECTED_PROCESSES and (force or w["process"].lower() != "explorer.exe"):
+            raise ProtocolError("это окно закрывать нельзя")
+        self.open_windows.remove(w)
+        return f"закрыто: {w['app']}"
+
+    def close_tab(self, window: int, title: str, index: int) -> str:
+        self.actions.append(("close_tab", window, title, index))
+        w = self._window(window)
+        tabs = w.get("tabs", [])
+        same = [i for i, t in enumerate(tabs) if t["title"] == title]
+        if not same:
+            return "вкладка уже закрыта"
+        del tabs[min(same, key=lambda i: abs(i - index))]
+        for i, t in enumerate(tabs):
+            t["index"] = i
+        if not tabs:
+            self.open_windows.remove(w)
+        return f"вкладка закрыта: {title}"
 
     def spawn_overlay(self, spec: dict) -> FakeOverlay:
         ov = FakeOverlay(spec)

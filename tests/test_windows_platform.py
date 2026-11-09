@@ -94,3 +94,50 @@ def test_running_exe_can_be_renamed(tmp_path):
         assert exe.exists() and (tmp_path / "copy-old.exe").exists()
     finally:
         proc.kill()
+
+
+def test_list_open_runs(wp):
+    data = wp.list_open()
+    assert isinstance(data["windows"], list)
+    for w in data["windows"]:
+        assert w["id"] and w["process"] != "agent.exe"
+
+
+def test_browser_tabs_listed_and_closed(wp, tmp_path):
+    """Настоящий Edge с двумя вкладками: видим обе, закрываем одну. Без рабочего стола — пропуск."""
+    import subprocess
+    import time
+
+    from agent.platform.windows import find_browser
+    exe = find_browser("edge") or find_browser("chrome")
+    if exe is None:
+        pytest.skip("нет браузера")
+    pages = ["data:text/html,<title>Alpha tab</title>A", "data:text/html,<title>Beta tab</title>B"]
+    proc = subprocess.Popen([str(exe), f"--user-data-dir={tmp_path / 'profile'}", "--no-first-run",
+                             "--no-default-browser-check", "--new-window", *pages])
+    try:
+        def find():
+            for w in wp.list_open()["windows"]:
+                titles = [t["title"] for t in w["tabs"]]
+                if any("Alpha tab" in t for t in titles) and any("Beta tab" in t for t in titles):
+                    return w, titles
+            return None, []
+
+        win, titles = None, []
+        for _ in range(40):
+            win, titles = find()
+            if win:
+                break
+            time.sleep(0.5)
+        if win is None:
+            pytest.skip("окно браузера не появилось (нет рабочего стола)")
+        beta = next(t for t in win["tabs"] if "Beta tab" in t["title"])
+        print(wp.close_tab(win["id"], beta["title"], beta["index"]))
+        _, titles = find()
+        win2 = next((w for w in wp.list_open()["windows"] if w["id"] == win["id"]), None)
+        assert win2 is not None
+        names = [t["title"] for t in win2["tabs"]]
+        assert any("Alpha tab" in t for t in names) and not any("Beta tab" in t for t in names)
+        print(wp.close_window(win["id"], False))
+    finally:
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)

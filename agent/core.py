@@ -231,6 +231,17 @@ class AgentCore:
             return {"text": text, **r}
         if action is Action.RECEIVE_FILES:
             return self.materials.start(params["package_id"], params["name"])
+        if action in (Action.LIST_OPEN, Action.CLOSE_WINDOW, Action.CLOSE_TAB):
+            try:
+                if action is Action.LIST_OPEN:
+                    data = await asyncio.to_thread(p.list_open)
+                    n_tabs = sum(len(w.get("tabs") or []) for w in data["windows"])
+                    return {"text": f"окон: {len(data['windows'])}, вкладок: {n_tabs}", **data}
+                if action is Action.CLOSE_WINDOW:
+                    return await asyncio.to_thread(p.close_window, params["window"], params["force"])
+                return await asyncio.to_thread(p.close_tab, params["window"], params["title"], params["index"])
+            except NotImplementedError as e:
+                raise ProtocolError(str(e)) from e
         if action is Action.UPDATE_AGENT:
             from shared.update import UpdateError
             try:

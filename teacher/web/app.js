@@ -249,10 +249,12 @@ async function laptopDialog(l) {
     buttons: [
       { text: "Отвязать", kind: "red", value: "unpair" },
       { text: "Изменить номер", kind: "orange", value: "rename" },
+      ...(l.online ? [{ text: "👁 Что открыто", kind: "ghost", value: "opened" }] : []),
       { text: "Готово", value: null },
     ],
   });
   if (v === "rename") renameLaptop(l.number);
+  if (v === "opened") App.openedDialog([l.number]);
   if (v === "unpair") {
     if (!(await confirmBox(`Отвязать ноутбук ${l.number}?\nЧтобы подключить его снова, запустите на нём agent.exe и нажмите «Принять».`, { okText: "Отвязать", danger: true }))) return;
     try { await api("DELETE", `/ui/api/laptops/${encodeURIComponent(l.number)}`); toast(`Ноутбук ${l.number} отвязан`, "ok"); }
@@ -551,7 +553,7 @@ document.querySelectorAll("[data-act]").forEach((b) => {
     if (a === "endlesson") return;   // обрабатывается в projects.js
     if (!state.laptops.length) { toast("Сначала подключите ноутбуки", "error"); return; }
     ({ open: openSiteDialog, materials: materialsDialog, lock: toggleLock, message: messageDialog,
-       close: closeDialog, power: powerDialog }[a])();
+       close: closeDialog, power: powerDialog, opened: () => App.openedDialog() }[a])();
   });
 });
 

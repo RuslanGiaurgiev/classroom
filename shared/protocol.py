@@ -70,6 +70,9 @@ class Action(str, Enum):
     CLEANUP = "cleanup"                  # «Конец урока»: убрать в корзину только подтверждённые файлы
     UPDATE_AGENT = "update_agent"        # обновиться до версии (файл берётся у учителя, проверяется подпись)
     RECEIVE_FILES = "receive_files"      # скачать у учителя пакет материалов урока
+    LIST_OPEN = "list_open"              # что открыто: окна программ и вкладки браузеров
+    CLOSE_WINDOW = "close_window"        # закрыть одно окно (из списка list_open)
+    CLOSE_TAB = "close_tab"              # закрыть одну вкладку браузера (из списка list_open)
 
 
 # Процессы, которые нельзя закрывать ни при каких настройках
@@ -192,6 +195,22 @@ def _int(params: dict, key: str, lo: int, hi: int, default: int) -> int:
     return value
 
 
+def _window_id(params: dict) -> int:
+    """Номер окна Windows (HWND) из списка list_open."""
+    value = params.get("window")
+    if not isinstance(value, int) or isinstance(value, bool) or not 0 < value < 2 ** 48:
+        raise ProtocolError("Некорректное окно")
+    return value
+
+
+def _plain(params: dict, key: str, max_len: int) -> str:
+    """Строка как есть (заголовок вкладки может быть пустым или с пробелами по краям)."""
+    value = params.get(key, "")
+    if not isinstance(value, str) or len(value) > max_len:
+        raise ProtocolError(f"{key}: нужна строка до {max_len} символов")
+    return value
+
+
 def validate_process_name(name: str) -> str:
     if not isinstance(name, str) or not _PROCESS_RE.match(name.strip()):
         raise ProtocolError(f"Некорректное имя программы: {name!r} (нужно вида chrome.exe)")
@@ -258,6 +277,13 @@ def validate_command(action: str, params: dict[str, Any]) -> tuple[Action, dict[
         if not isinstance(pid, str) or not re.fullmatch(r"[0-9a-f]{32}", pid):
             raise ProtocolError("Некорректный пакет")
         return act, {"package_id": pid, "name": _text(params, "name", 120, "Материалы")}
+
+    if act is Action.CLOSE_WINDOW:
+        return act, {"window": _window_id(params), "force": params.get("force") is True}
+
+    if act is Action.CLOSE_TAB:
+        return act, {"window": _window_id(params), "title": _plain(params, "title", 300),
+                     "index": _int(params, "index", 0, 1000, 0)}
 
     if act is Action.UPDATE_AGENT:
         v = params.get("version")

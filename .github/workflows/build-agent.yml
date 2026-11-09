@@ -44,7 +44,7 @@ jobs:
       - name: Сборка agent.exe
         run: >
           pyinstaller --onefile --noconsole --clean --name agent
-          --paths . --collect-submodules zeroconf
+          --paths . --collect-submodules zeroconf --collect-submodules comtypes
           agent/run_agent.py
       - name: Проверка, что exe собрался
         shell: pwsh

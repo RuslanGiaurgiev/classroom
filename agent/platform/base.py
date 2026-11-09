@@ -103,6 +103,28 @@ class Platform(ABC):
     def close_processes(self, names: list[str]) -> str:
         """Закрыть программы по имени процесса (имена уже проверены). Возвращает текст для журнала."""
 
+    # ---------- Что открыто ----------
+
+    def list_open(self) -> dict:
+        """
+        Что открыто на экране: окна программ (как на панели задач) и вкладки браузеров.
+        {"windows": [{"id": HWND, "title", "app", "process", "browser": bool,
+                      "tabs": [{"title", "index", "active", "url"}]}],
+         "tabs_error": "почему вкладки не удалось прочитать" или ""}
+        """
+        raise NotImplementedError("Список окон на этом компьютере недоступен")
+
+    def close_window(self, window: int, force: bool) -> str:
+        """
+        Закрыть окно из list_open (как крестиком). force — завершить программу этого окна.
+        Нельзя трогать окна агента и системные. Отказ — ProtocolError.
+        """
+        raise NotImplementedError("Закрытие окон на этом компьютере недоступно")
+
+    def close_tab(self, window: int, title: str, index: int) -> str:
+        """Закрыть вкладку браузера: окно window, вкладка с таким заголовком (ближайшая к index)."""
+        raise NotImplementedError("Закрытие вкладок на этом компьютере недоступно")
+
     @abstractmethod
     def spawn_overlay(self, spec: dict) -> OverlayHandle:
         """
