@@ -100,6 +100,22 @@ def variant_matches(variant: str, words: list[str], threshold: int = DEFAULT_THR
     return False
 
 
+_PATRONYMIC = re.compile(r"(ович|евич|ьич|овна|евна|ична|инична)$")
+
+
+def name_variants(name: str) -> list[str]:
+    """
+    Варианты имени для поиска. Ученик может быть записан полностью: «Петров Илья Сергеевич».
+    Дети пишут в файлах только имя или фамилию — поэтому ищем и ФИО целиком,
+    и каждое слово отдельно (кроме отчества).
+    """
+    words = tokens(name)
+    out = [name]
+    if len(words) > 1:
+        out += [w for w in words if len(w) >= 2 and not _PATRONYMIC.search(w)]
+    return out
+
+
 def match_students(filename: str, students: list[dict], threshold: int = DEFAULT_THRESHOLD) -> list[dict]:
     """
     Все ученики, чьё имя (или вариант написания) есть в имени файла.
@@ -110,7 +126,7 @@ def match_students(filename: str, students: list[dict], threshold: int = DEFAULT
         return []
     found = []
     for s in students:
-        variants = [s["name"], *s.get("aliases", [])]
+        variants = [*name_variants(s["name"]), *s.get("aliases", [])]
         if any(variant_matches(v, words, threshold) for v in variants):
             found.append(s)
     return found

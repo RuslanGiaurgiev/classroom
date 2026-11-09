@@ -15,6 +15,7 @@
     ["apps", "✖️", "Программы"],
     ["disk", "☁️", "Яндекс Диск"],
     ["updates", "🔄", "Обновления"],
+    ["backups", "💾", "Резервные копии"],
   ];
   let current = "laptops";
   let dirty = false;   // учитель что-то вводит — не перерисовываем раздел под ним
@@ -35,7 +36,7 @@
     const body = $("settingsBody");
     body.innerHTML = "";
     body.oninput = () => (dirty = true);
-    ({ laptops, collect, materials, sites, apps, disk, updates }[current])(body);
+    ({ laptops, collect, materials, sites, apps, disk, updates, backups }[current])(body);
   }
   const head = (body, title, lead) => body.append(el("h2", {}, title), el("p", { className: "lead" }, lead));
   const group = (title, ...children) => el("div", { className: "set-group" }, title ? el("h3", {}, title) : null, ...children);
@@ -249,11 +250,31 @@
         el("div", { className: "row", style: "margin-top:12px" }, check, push)));
   }
 
+  // ---------- 💾 Резервные копии ----------
+  async function backups(body) {
+    head(body, "💾 Резервные копии", "Группы, ученики, история работ и настройки сохраняются автоматически: при каждом запуске приложения и каждые 3 часа. Хранятся последние 30 копий.");
+    let info = { root: "", copies: [] };
+    try { info = await api("GET", "/ui/api/backup"); } catch (e) { /* покажем пустой список */ }
+    const now = el("button", { className: "btn", textContent: "Сделать копию сейчас" });
+    now.onclick = async () => {
+      now.disabled = true;
+      try { await api("POST", "/ui/api/backup"); ok("Резервная копия сохранена"); setTimeout(renderBody, 300); } catch (e) { fail(e.message); }
+      now.disabled = false;
+    };
+    const open = el("button", { className: "btn ghost", textContent: "Открыть папку" });
+    open.onclick = () => api("POST", "/ui/api/open-folder", { which: "backups" });
+    body.append(group(null, el("div", { className: "row" }, now, open),
+      el("p", { className: "muted small" }, "Папка: " + info.root)),
+      group("Последние копии", info.copies.length ? el("div", {}, ...info.copies.slice(0, 10).map((c) => el("div", { className: "small" }, "• " + c.replace("_", " в ").replace(/-(\d\d)-(\d\d)$/, ":$1:$2"))))
+        : el("p", { className: "muted small" }, "Копий пока нет.")),
+      group("Если что-то пропало", el("p", { className: "small" }, "Закройте приложение и напишите разработчику — данные восстанавливаются из любой копии за минуту. Сами копии ничего не перезаписывают.")));
+  }
+
   // Перерисовка при изменениях (кроме момента, когда учитель что-то вводит)
   App.onState(() => {
     renderNav();
     const body = $("settingsBody");
-    if (current !== "disk" && !dirty && !body.contains(document.activeElement)) renderBody();
+    if (current !== "disk" && current !== "backups" && !dirty && !body.contains(document.activeElement)) renderBody();
   });
   App.onProjects = () => { if (current === "disk" && !dirty) renderBody(); };
   renderNav();

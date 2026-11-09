@@ -413,7 +413,7 @@ class Sorter:
 
     async def handle_open_folder(self, request: web.Request) -> web.Response:
         body = await request.json()
-        names = {"root": "", "projects": "Проекты", "unsorted": "Неразобранное", "inbox": "Входящие"}
+        names = {"root": "", "projects": "Проекты", "unsorted": "Неразобранное", "inbox": "Входящие", "backups": "Резервные копии"}
         sub = names.get(body.get("which", "root"), "")
         path = self.server.projects_root() / sub
         path.mkdir(parents=True, exist_ok=True)

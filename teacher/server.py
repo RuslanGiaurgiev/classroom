@@ -45,6 +45,7 @@ from shared.search import SEARCH_ENGINES, to_url
 from teacher.db import DB
 from teacher.endlesson import EndLesson
 from teacher.updates import UpdateManager
+from teacher.backup import Backups
 from teacher.importer import Importer
 from teacher.inbox import FileReceiver
 from teacher.materials import MaterialsManager
@@ -109,6 +110,7 @@ class TeacherServer:
         self.files = FileReceiver(self)
         self.sorter = Sorter(self)
         self.importer = Importer(self)
+        self.backups = Backups(self)
         self.end_lesson = EndLesson(self)
         self.updates = UpdateManager(self)
         self.materials = MaterialsManager(self)
@@ -139,6 +141,7 @@ class TeacherServer:
         app.add_routes(self.files.routes())
         app.add_routes(self.sorter.routes())
         app.add_routes(self.importer.routes())
+        app.add_routes(self.backups.routes())
         app.add_routes(self.disk.routes())
         app.add_routes(self.end_lesson.routes())
         app.add_routes(self.updates.routes())
@@ -157,7 +160,8 @@ class TeacherServer:
         log.info("Сервер запущен на %s:%s", host, self.port)
         self.sorter.purge_ignored_unsorted()
         self.disk.start()
-        if check_updates:
+        if check_updates:          # в тестах выключено — как и проверка обновлений
+            self.backups.start()
             self.updates.start()
         if udp_discovery:
             # Отвечаем на широковещательный поиск на том же номере порта (UDP)
@@ -171,6 +175,7 @@ class TeacherServer:
             await ws.close()
         await self.disk.stop()
         await self.updates.stop()
+        await self.backups.stop()
         if self._udp:
             self._udp.close()
         if self._runner:
