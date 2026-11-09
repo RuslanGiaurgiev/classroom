@@ -467,6 +467,7 @@ class TeacherServer:
         keys = ("search_engine", "apps", "lesson_sets", "watch_folders", "max_file_mb", "active_groups",
                 "name_threshold", "disk_root", "disk_client_id", "ignore_patterns", "materials_dest", "lock_text")
         return {k: st.get(k) for k in keys} | {
+            "disk_clean_local": st.get("disk_clean_local", True),
             "search_engines": {k: v[0] for k, v in SEARCH_ENGINES.items()},
             "projects_root": str(self.projects_root()),
         }
@@ -556,6 +557,8 @@ class TeacherServer:
             out["lock_text"] = t or "Внимание на учителя!"
         if "auto_update" in body:
             out["auto_update"] = bool(body["auto_update"])
+        if "disk_clean_local" in body:
+            out["disk_clean_local"] = bool(body["disk_clean_local"])
         if "ignore_patterns" in body:
             out["ignore_patterns"] = clean_patterns(body["ignore_patterns"])
         if "max_file_mb" in body:

@@ -178,6 +178,14 @@ class YandexDisk:
         if not due:
             if self.state not in ("offline",):
                 self._set_state("idle")
+            if self._cleanable():
+                try:
+                    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120),
+                                                     headers={"Authorization": f"OAuth {token}"}) as s:
+                        if await self.clean_local(s):
+                            await self.server.broadcast_event({"kind": "disk_changed"})
+                except (aiohttp.ClientError, asyncio.TimeoutError, OSError, RuntimeError, DiskAuthError) as e:
+                    log.info("Очистка Mac после Диска отложена: %s", e)
             return 0
         done = 0
         self._set_state("working")
@@ -197,11 +205,69 @@ class YandexDisk:
                     if isinstance(e, (aiohttp.ClientConnectionError, asyncio.TimeoutError)):
                         self._set_state("offline")  # нет интернета — не мучаем остальные файлы
                         break
+            cleaned = 0
+            if self.state != "auth_error":
+                try:
+                    cleaned = await self.clean_local(s)
+                except (aiohttp.ClientError, asyncio.TimeoutError, OSError, RuntimeError, DiskAuthError) as e:
+                    log.info("Очистка Mac после Диска отложена: %s", e)
         if self.state == "working":
             self._set_state("idle")
-        if done:
+        if done or cleaned:
             await self.server.broadcast_event({"kind": "disk_changed"})
         return done
+
+    # ================= Очистка Mac после проверенной отправки =================
+
+    def _cleanable(self) -> list[dict]:
+        """Отправленные работы, которые ещё лежат на Mac (и больше не ждут отправки куда-то ещё)."""
+        if not self.server.storage.settings().get("disk_clean_local", True):
+            return []
+        return self.db.q(
+            "SELECT q.received_id, MIN(q.remote_path) AS remote_path, r.sha256, r.project_path, r.inbox_path"
+            " FROM disk_queue q JOIN received r ON r.id=q.received_id"
+            " WHERE q.status='done' AND q.local_cleaned=0 AND r.status='sorted'"
+            " AND NOT EXISTS (SELECT 1 FROM disk_queue p WHERE p.received_id=q.received_id AND p.status='pending')"
+            " GROUP BY q.received_id LIMIT 200")
+
+    async def clean_local(self, s: aiohttp.ClientSession) -> int:
+        """
+        Удалить с Mac работы, которые уже на Диске. Только если SHA-256 файла НА ДИСКЕ
+        совпал с полученным с ноутбука (Диск считает его сам — значит, файл дошёл целиком).
+        """
+        from teacher.inbox import sha256_file
+        n = 0
+        for row in self._cleanable():
+            remote_sha = await self._remote_sha(s, row["remote_path"])
+            if remote_sha != row["sha256"]:
+                continue  # Диск ещё не посчитал сумму или файл другой — не трогаем, проверим позже
+            paths = [Path(p) for p in {row["project_path"], row["inbox_path"]} if p]
+            existing = [p for p in paths if p.exists()]
+            # Файл на Mac могли изменить (например, открыли и пересохранили) — тогда не удаляем
+            if existing and await asyncio.to_thread(sha256_file, existing[0]) != row["sha256"]:
+                self.db.q("UPDATE disk_queue SET local_cleaned=2 WHERE received_id=?", (row["received_id"],))
+                continue
+            for p in existing:
+                try:
+                    p.unlink()
+                except OSError:
+                    log.warning("Не удалось удалить %s", p)
+                    continue
+                self._remove_empty_dirs(p.parent)
+            self.db.q("UPDATE disk_queue SET local_cleaned=1 WHERE received_id=? AND status='done'", (row["received_id"],))
+            n += 1
+        if n:
+            log.info("Удалено с Mac (уже на Диске, сумма проверена): %s", n)
+        return n
+
+    def _remove_empty_dirs(self, d: Path) -> None:
+        root = self.server.projects_root()
+        while d != root and root in d.parents:
+            try:
+                d.rmdir()
+            except OSError:
+                return
+            d = d.parent
 
     def _retry_later(self, item: dict, err: Exception) -> None:
         attempts = item["attempts"] + 1

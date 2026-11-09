@@ -370,10 +370,21 @@
         move.onclick = async () => { const sid = await pickStudent(`Чья работа «${f.name}»?`); if (sid) assign(f, sid); };
         list.append(el("div", { className: "file-row" }, el("span", { className: "file-ico" }, icon(f.name)),
           el("div", { className: "file-info" }, el("b", {}, f.name), el("span", { className: "muted small" }, `ноутбук ${f.laptop} · ${fmtTime(f.received_at)} · ${fmtSize(f.size)}`)),
-          f.exists ? open : el("span", { className: "muted small" }, "файл удалён с Mac"), show, move));
+          f.exists ? open : f.on_disk ? diskOpen(f) : el("span", { className: "muted small" }, "файл удалён с Mac"),
+          f.exists ? show : null, f.exists ? move : null));
       }
     }).catch((e) => fail(e.message));
     return box;
+  }
+
+  // Работа уже на Диске и удалена с Mac: открыть её на Диске
+  function diskOpen(f) {
+    const b = el("button", { className: "btn small", textContent: "☁️ На Диске", title: f.on_disk });
+    b.onclick = async () => {
+      try { const r = await api("GET", "/ui/api/disk/link?path=" + encodeURIComponent(f.on_disk)); window.open(r.href, "_blank"); }
+      catch (e) { fail(e.message); }
+    };
+    return b;
   }
 
   function renderUnsorted() {

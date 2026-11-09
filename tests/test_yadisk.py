@@ -329,6 +329,7 @@ async def test_lesson_folder_reused_by_number(env):
 async def test_browse_delete_and_resend(env):
     server, fake, tokens = env
     tokens.token = TOKEN
+    server.storage.update_settings(disk_clean_local=False)   # работа остаётся на Mac — её можно отправить снова
     gid = await setup_lesson(server, fake)
     _, plan = await ui(server, "GET", f"/ui/api/disk/plan?group_id={gid}&date=2026-11-08&program=Make Code")
     masha = next(x for x in plan["students"] if x["name"].startswith("Иванова"))
@@ -375,3 +376,82 @@ async def test_manual_upload_and_mkdir(env):
     assert fake.files[f"{ROOT}/Маша Иванова/Tinkercad/модель.stl"] == b"model"
     assert fake.files[f"{ROOT}/Маша Иванова/Tinkercad/модель (2).stl"] == b"other"   # ничего не перезаписали
     assert not list(server.storage.data_dir.glob("disk-upload-*"))  # временные файлы убраны
+
+
+async def _send_masha(server, fake, gid, folder_name="Урок 3"):
+    _, plan = await ui(server, "GET", f"/ui/api/disk/plan?group_id={gid}&date=2026-11-08&program=Make Code")
+    masha = next(x for x in plan["students"] if x["name"].startswith("Иванова"))
+    _, r = await ui(server, "POST", "/ui/api/disk/send", json={
+        "group_id": gid, "date": "2026-11-08", "program": "Make Code", "folder_name": folder_name,
+        "students": [{"student_id": masha["student_id"], "folder": "Маша Иванова"}]})
+    return masha, r
+
+
+async def test_mac_cleaned_only_after_verified_upload(env):
+    from pathlib import Path
+    server, fake, tokens = env
+    tokens.token = TOKEN
+    gid = await setup_lesson(server, fake)
+    row = server.db.one("SELECT * FROM received WHERE name LIKE 'Маша%'")
+    paths = [Path(row["project_path"]), Path(row["inbox_path"])]
+    assert all(p.exists() for p in paths)
+    masha, r = await _send_masha(server, fake, gid)
+    assert r["queued"] == 1
+    await server.disk.process_queue()
+    assert f"{ROOT}/Маша Иванова/Make Code/Урок 3/Маша проект.sb3" in fake.files
+    assert not any(p.exists() for p in paths)                    # сумма на Диске совпала → удалено с Mac
+    assert server.db.one("SELECT local_cleaned FROM disk_queue")["local_cleaned"] == 1
+
+    # В «Работах» — ссылка на Диск вместо файла
+    _, files = await ui(server, "GET", f"/ui/api/students/{masha['student_id']}/files")
+    assert files["files"][0]["exists"] is False
+    assert files["files"][0]["on_disk"] == "Маша Иванова/Make Code/Урок 3/Маша проект.sb3"
+    # Перенести другому ученику нельзя (файла на Mac нет) — понятная ошибка
+    petya = next(s for s in server.db.students() if s["name"] == "Петя Сидоров")
+    status, r = await ui(server, "POST", f"/ui/api/files/{row['id']}/assign", json={"student_id": petya["id"]})
+    assert status == 400 and "Диске" in r["error"]
+
+    # Удалили урок на Диске — повторно отправить с Mac уже нечего, но и ошибок нет
+    await ui(server, "POST", "/ui/api/disk/delete", json={"path": "Маша Иванова/Make Code/Урок 3"})
+    _, plan = await ui(server, "GET", f"/ui/api/disk/plan?group_id={gid}&date=2026-11-08&program=Make Code")
+    f = next(x for x in plan["students"] if x["name"].startswith("Иванова"))["files"][0]
+    assert f["sent"] is False and f["local"] is False
+    _, r = await _send_masha(server, fake, gid)
+    assert r["queued"] == 0 and r["skipped"] == 1
+
+
+async def test_mac_not_cleaned_when_disk_sum_differs_or_setting_off(env):
+    from pathlib import Path
+    server, fake, tokens = env
+    tokens.token = TOKEN
+    gid = await setup_lesson(server, fake)
+    row = server.db.one("SELECT * FROM received WHERE name LIKE 'Маша%'")
+    server.storage.update_settings(disk_clean_local=False)
+    await _send_masha(server, fake, gid)
+    await server.disk.process_queue()
+    assert Path(row["project_path"]).exists()                    # настройка выключена — не трогаем
+
+    server.storage.update_settings(disk_clean_local=True)
+    remote = f"{ROOT}/Маша Иванова/Make Code/Урок 3/Маша проект.sb3"
+    fake.files[remote] = b"corrupted"                            # на Диске оказалось не то
+    await server.disk.process_queue()
+    assert Path(row["project_path"]).exists() and Path(row["inbox_path"]).exists()
+    fake.files[remote] = b"masha"
+    await server.disk.process_queue()                            # теперь совпало — удаляем
+    assert not Path(row["project_path"]).exists()
+
+
+def test_old_database_gets_new_column(tmp_path):
+    import sqlite3
+    from teacher.db import DB
+    path = tmp_path / "old.sqlite3"
+    con = sqlite3.connect(path)
+    con.executescript("""CREATE TABLE disk_queue (id INTEGER PRIMARY KEY, received_id INTEGER NOT NULL,
+        local_path TEXT NOT NULL, remote_path TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+        attempts INTEGER NOT NULL DEFAULT 0, next_try REAL NOT NULL DEFAULT 0, last_error TEXT DEFAULT '',
+        updated REAL NOT NULL, UNIQUE (received_id, remote_path));
+        INSERT INTO disk_queue(received_id, local_path, remote_path, status, updated) VALUES (1, '/x', 'a/b', 'done', 0);""")
+    con.commit()
+    con.close()
+    db = DB(path)
+    assert db.one("SELECT status, local_cleaned FROM disk_queue") == {"status": "done", "local_cleaned": 0}

@@ -148,6 +148,8 @@ class Sorter:
         student = self.db.student(student_id)
         if f is None or student is None:
             raise ValueError("Файл или ученик не найден")
+        if not any(p and Path(p).exists() for p in (f["project_path"], f["inbox_path"])):
+            raise ValueError("Работа уже на Яндекс Диске и удалена с Mac — перенесите её на Диске (вкладка «Яндекс Диск»)")
         dest = unique_path(self.project_dir(student, f["lesson_date"]) / f["name"])
         dest.parent.mkdir(parents=True, exist_ok=True)
         old = Path(f["project_path"]) if f["project_path"] else None
@@ -387,8 +389,14 @@ class Sorter:
         rows = self.db.q("SELECT id, laptop, name, size, received_at, lesson_date, project_path FROM received"
                          " WHERE student_id=? AND status='sorted' ORDER BY received_at DESC LIMIT 500",
                          (int(request.match_info["id"]),))
+        root = self.server.disk.root()
         for r in rows:
             r["exists"] = bool(r["project_path"]) and Path(r["project_path"]).exists()
+            q = self.db.one("SELECT remote_path FROM disk_queue WHERE received_id=? AND status='done' ORDER BY id DESC LIMIT 1",
+                            (r["id"],))
+            # Где работа на Диске (путь внутри папки школы) — чтобы открыть, если с Mac уже удалена
+            rp = q["remote_path"] if q else ""
+            r["on_disk"] = rp[len(root) + 1:] if root and rp.startswith(root + "/") else ""
         return web.json_response({"files": rows})
 
     async def handle_open_file(self, request: web.Request) -> web.Response:

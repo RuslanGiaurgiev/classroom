@@ -72,6 +72,14 @@ class DB:
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA foreign_keys=ON")
         self._db.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Добавить новые колонки в старую базу (данные не трогаем)."""
+        cols = {r[1] for r in self._db.execute("PRAGMA table_info(disk_queue)").fetchall()}
+        if "local_cleaned" not in cols:
+            # 1 — файл проверен на Диске и удалён с Mac
+            self._db.execute("ALTER TABLE disk_queue ADD COLUMN local_cleaned INTEGER NOT NULL DEFAULT 0")
 
     def q(self, sql: str, args: tuple = ()) -> list[dict[str, Any]]:
         with self._lock:

@@ -57,6 +57,17 @@ def start_caffeinate() -> subprocess.Popen | None:
         return None
 
 
+def show_alert(text: str) -> None:
+    """Сообщение об ошибке окном (приложение из «Программ» запускается без Терминала)."""
+    if sys.platform != "darwin" or (sys.stderr is not None and sys.stderr.isatty()):
+        return
+    script = 'display alert "Айтишкино" message ' + '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '" as critical'
+    try:
+        subprocess.run(["osascript", "-e", script], timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 class Backend:
     """Сервер + mDNS в фоновом потоке."""
 
@@ -116,6 +127,7 @@ def main() -> None:
         if isinstance(backend.error, OSError):
             msg += f"\nВозможно, порт {storage.port} занят — приложение уже запущено?"
         print(msg, file=sys.stderr)
+        show_alert(msg)
         sys.exit(1)
 
     url = f"http://127.0.0.1:{backend.server.port}/ui/?t={storage.get_ui_token()}"
@@ -126,7 +138,7 @@ def main() -> None:
             threading.Event().wait()
         else:
             import webview  # pywebview
-            webview.create_window("Компьютерный класс", url, width=1200, height=820, min_size=(800, 600))
+            webview.create_window("Айтишкино — компьютерный класс", url, width=1200, height=820, min_size=(800, 600))
             webview.start()
     except KeyboardInterrupt:
         pass

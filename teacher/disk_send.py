@@ -113,7 +113,7 @@ class DiskSender:
 
     def _files(self, group_id: int, day: str) -> dict[int, list[dict]]:
         rows = self.db.q(
-            "SELECT r.id, r.name, r.project_path, r.student_id,"
+            "SELECT r.id, r.name, r.project_path, r.inbox_path, r.student_id,"
             " EXISTS(SELECT 1 FROM disk_queue q WHERE q.received_id=r.id AND q.status IN ('done','pending')) AS sent"
             " FROM received r JOIN students s ON s.id=r.student_id"
             " WHERE r.status='sorted' AND s.group_id=? AND r.lesson_date=? ORDER BY r.name COLLATE NOCASE",
@@ -122,7 +122,9 @@ class DiskSender:
         for r in rows:
             out.setdefault(r["student_id"], []).append(
                 {"id": r["id"], "name": Path(r["project_path"]).name if r["project_path"] else r["name"],
-                 "sent": bool(r["sent"])})
+                 "sent": bool(r["sent"]),
+                 # После проверенной отправки работа удаляется с Mac — отправить её снова нельзя
+                 "local": any(p and Path(p).exists() for p in (r["project_path"], r["inbox_path"]))})
         return out
 
     def _link(self, student_id: int) -> str | None:
@@ -262,7 +264,7 @@ class DiskSender:
                 rel, inside = await self._program_place(s, kid_path, kid_items, program)
                 lesson_dir = resolve_lesson_dir(lesson_folder, inside)
                 for f in files[sid]:
-                    if f["sent"]:
+                    if f["sent"] or not f["local"]:
                         skipped += 1
                         continue
                     remote = f"{kid_path}/{rel}/{lesson_dir}/{safe_name(f['name'])}"

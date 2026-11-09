@@ -72,7 +72,7 @@
           el("button", { className: "btn small orange", textContent: "Открыть настройки", onclick: () => { document.querySelector(".modal")._close(); App.showTab("settings"); if (App.openSettings) App.openSettings("disk"); } })));
       }
       for (const st of p.students) {
-        const unsent = st.files.filter((f) => !f.sent);
+        const unsent = st.files.filter((f) => !f.sent && f.local !== false);
         const row = { st, include: el("input", { type: "checkbox", checked: unsent.length > 0, disabled: !unsent.length }), folder: null, create: null };
         let where;
         if (st.status === "found") {
@@ -111,14 +111,14 @@
       if (!plan) return;
       const wanted = lesson.value.trim();
       const bad = /[\\/:*?"<>|]/.test(wanted);
-      let count = 0;
+      let count = 0;   // работы, удалённые с Mac после отправки, повторно не уходят
       for (const r of rows) {
         const folder = r.folder();
         const progPath = r.st.program_path || safe(prog.value.trim());
         const ld = resolveLessonDir(wanted, r.st);
         r.dest.textContent = plan.program && wanted ? `→ ${folder || "…"} / ${progPath} / ${ld.name}${ld.exists ? " (уже есть — добавлю туда)" : ""}` : "";
         const ready = r.include.checked && folder && (!r.create || !r.isNew() || r.create.checked);
-        if (ready) count += r.st.files.filter((f) => !f.sent).length;
+        if (ready) count += r.st.files.filter((f) => !f.sent && f.local !== false).length;
       }
       sendBtn.disabled = !count || !prog.value.trim() || !wanted || bad;
       lesson.classList.toggle("bad", bad);

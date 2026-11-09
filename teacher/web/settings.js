@@ -201,6 +201,8 @@
     const rootName = el("input", { type: "text", value: st.disk_root || "", placeholder: "например, Марьино/2026-2027", style: "flex:1" });
     const saveRoot = el("button", { className: "btn small", textContent: "Сохранить" });
     saveRoot.onclick = () => save({ disk_root: rootName.value }, "Папка на Диске сохранена").then(() => (dirty = false));
+    const cleanLocal = el("input", { type: "checkbox", checked: st.disk_clean_local !== false });
+    cleanLocal.onchange = () => save({ disk_clean_local: cleanLocal.checked }, cleanLocal.checked ? "Работы будут удаляться с Mac после отправки на Диск" : "Работы останутся на Mac");
     const errors = (d.items || []).filter((i) => i.status !== "done" && i.last_error).slice(0, 8);
     body.append(
       group("Состояние", el("p", {}, el("b", {}, stateText)), el("p", { className: "muted small" }, `Выгружено: ${c.done || 0} · в очереди: ${c.pending || 0}`),
@@ -215,7 +217,9 @@
           el("li", {}, "Нажмите ", getTok, ", разрешите доступ и скопируйте показанный токен."),
           el("li", {}, "Вставьте токен: ", tok, " ", saveTok)),
         el("p", { className: "muted small" }, "Токен хранится только в Связке ключей этого Mac.")),
-      group("Папка с папками детей на Диске", el("p", { className: "muted small" }, "Путь от корня Диска, через «/». Каждый учебный год — меняйте здесь."), el("div", { className: "row" }, rootName, saveRoot)));
+      group("Папка с папками детей на Диске", el("p", { className: "muted small" }, "Путь от корня Диска, через «/». Каждый учебный год — меняйте здесь."), el("div", { className: "row" }, rootName, saveRoot)),
+      group("Место на Mac", el("label", { className: "check" }, cleanLocal, " Удалять работы с Mac, когда они уже на Диске"),
+        el("p", { className: "muted small" }, "Удаляется только после проверки: контрольная сумма файла на Диске должна совпасть с полученным с ноутбука. В «Работах» такие файлы открываются кнопкой «☁️ На Диске». Неразобранное и неотправленное не трогается.")));
   }
 
   // ---------- ⟳ Обновления ----------
