@@ -78,6 +78,7 @@ class Sorter:
             web.get("/ui/api/students/{id}/files", self.handle_student_files),
             web.post("/ui/api/files/{id}/delete", self.handle_delete),
             web.post("/ui/api/files/delete-unsorted-by-name", self.handle_delete_by_name),
+            web.post("/ui/api/files/clear", self.handle_clear),
             web.post("/ui/api/ignore", self.handle_ignore),
             web.post("/ui/api/open-folder", self.handle_open_folder),
         ]
@@ -200,7 +201,7 @@ class Sorter:
             "active_group": (self.active_groups() or [None])[0],
             "active_groups": self.active_groups(),
             "unsorted": unsorted,
-            "recent": files("1=1", 100),
+            "recent": files("r.status!='deleted'", 100),
             "root": str(self.server.projects_root()),
         })
 
@@ -344,6 +345,23 @@ class Sorter:
         ok = self.delete_file(int(request.match_info["id"]))
         await self.server.broadcast_event({"kind": "projects_changed"})
         return web.json_response({"ok": ok})
+
+    async def handle_clear(self, request: web.Request) -> web.Response:
+        """
+        «🧹 Очистить работы»: убрать полученные работы из списков, а их файлы на Mac — в Корзину.
+        Группы и ученики остаются. Яндекс Диск и ноутбуки не трогаются. Сначала — резервная копия базы.
+        scope: all — все работы; unsorted — только «Неразобранное».
+        """
+        scope = str((await request.json()).get("scope", "all"))
+        statuses = {"all": ("sorted", "unsorted"), "unsorted": ("unsorted",)}.get(scope)
+        if statuses is None:
+            return web.json_response({"error": "Неизвестный вариант очистки"}, status=400)
+        await self.server.backups.backup_now()
+        rows = self.db.q(f"SELECT id FROM received WHERE status IN ({','.join('?' * len(statuses))})", statuses)
+        n = sum(1 for r in rows if self.delete_file(r["id"]))
+        log.info("Очистка работ (%s): убрано %s", scope, n)
+        await self.server.broadcast_event({"kind": "projects_changed"})
+        return web.json_response({"cleared": n})
 
     async def handle_delete_by_name(self, request: web.Request) -> web.Response:
         name = str((await request.json()).get("name", ""))

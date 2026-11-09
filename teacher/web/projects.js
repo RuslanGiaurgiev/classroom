@@ -217,6 +217,10 @@
       b.onclick = () => { view = { ...view, mode }; render(); };
       side.append(b);
     }
+    const clear = el("button", { className: "side-item", title: "Убрать полученные работы из списков (группы и дети останутся)" },
+      el("span", {}, "🧹"), el("b", {}, "Очистить работы"));
+    clear.onclick = clearWorks;
+    side.append(clear);
     const finder = el("button", { className: "side-item" }, el("span", {}, "📂"), el("b", {}, "Папка в Finder"));
     finder.onclick = () => openFolder("projects");
     side.append(finder);
@@ -375,6 +379,29 @@
       }
     }).catch((e) => fail(e.message));
     return box;
+  }
+
+  // ---------- 🧹 Очистить работы ----------
+  async function clearWorks() {
+    const total = proj.groups.reduce((n, g) => n + g.students.reduce((m, s) => m + s.files_total, 0), 0) + proj.unsorted.length;
+    const v = await App.dialog({
+      title: "🧹 Очистить работы",
+      body: [
+        el("p", {}, "Полученные работы пропадут из списков, а их файлы на Mac уйдут в Корзину (оттуда можно вернуть)."),
+        el("p", { className: "muted small" }, "Остаются: группы и дети, работы на Яндекс Диске, файлы на ноутбуках. Перед очисткой делается резервная копия базы."),
+        el("p", {}, `Сейчас работ: ${total}, из них неразобранных: ${proj.unsorted.length}.`),
+      ],
+      buttons: [
+        { text: "Отмена", value: null },
+        { text: "Только неразобранное", kind: "orange", value: "unsorted" },
+        { text: "Все работы", kind: "red", value: "all" },
+      ],
+    });
+    if (!v) return;
+    if (v === "all" && !(await App.confirm(`Очистить ВСЕ работы (${total})?\nГруппы и дети останутся, Яндекс Диск не тронется.`, { okText: "Очистить", danger: true }))) return;
+    try { const r = await api("POST", "/ui/api/files/clear", { scope: v }); ok(`Убрано работ: ${r.cleared}`); }
+    catch (e) { fail(e.message); }
+    reload();
   }
 
   // Работа уже на Диске и удалена с Mac: открыть её на Диске

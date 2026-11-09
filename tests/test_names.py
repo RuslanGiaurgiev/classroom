@@ -126,3 +126,25 @@ async def test_student_counts_and_files(teacher):
     assert masha["files_total"] == 2
     _, r = await ui(teacher, "GET", f"/ui/api/students/{masha['id']}/files")
     assert sorted(f["name"] for f in r["files"]) == ["masha1.sb3", "masha2.sb3"] and all(f["exists"] for f in r["files"])
+
+
+async def test_clear_works_keeps_groups_and_kids(teacher, tmp_path):
+    trash = tmp_path / "mac-trash"
+    teacher.sorter.trash_dir = lambda: trash
+    gid, _ = await add_group(teacher, "Пн", "Маша\nМиша")
+    await receive(teacher, "1", "маша кот.sb3", b"cat")
+    await receive(teacher, "2", "непонятно.sb3", b"x")
+    status, r = await ui(teacher, "POST", "/ui/api/files/clear", json={"scope": "unsorted"})
+    assert status == 200 and r["cleared"] == 1
+    _, proj = await ui(teacher, "GET", "/ui/api/projects")
+    assert proj["unsorted"] == [] and proj["groups"][0]["students"][0]["files_total"] == 1
+
+    status, r = await ui(teacher, "POST", "/ui/api/files/clear", json={"scope": "all"})
+    assert r["cleared"] == 1
+    _, proj = await ui(teacher, "GET", "/ui/api/projects")
+    assert [s["name"] for s in proj["groups"][0]["students"]] == ["Маша", "Миша"]      # дети на месте
+    assert all(s["files_total"] == 0 for s in proj["groups"][0]["students"]) and proj["recent"] == []
+    assert len(list(trash.iterdir())) >= 2                                           # файлы в Корзине
+    assert list((teacher.projects_root() / "Резервные копии").iterdir())             # копия базы сделана
+    status, _ = await ui(teacher, "POST", "/ui/api/files/clear", json={"scope": "всё подряд"})
+    assert status == 400
