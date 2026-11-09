@@ -27,7 +27,7 @@ def test_data_dir_is_localappdata_on_windows(tmp_path, monkeypatch):
     d = storage.default_data_dir()
     assert d == tmp_path / "AppData" / "Local" / "ClassroomTeacher"
     monkeypatch.setattr(storage.sys, "platform", "darwin")
-    assert "Library/Application Support/ClassroomTeacher" in str(storage.default_data_dir())
+    assert storage.default_data_dir().parts[-3:] == ("Library", "Application Support", "ClassroomTeacher")
 
 
 def test_env_override_wins_everywhere(tmp_path, monkeypatch):
