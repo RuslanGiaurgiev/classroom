@@ -52,7 +52,7 @@
 ## Приложение «Айтишкино» для учителя
 
 **Windows (админский ноутбук):** скачать `Aitishkino.exe` из релиза `teacher-v*`
-(https://github.com/RuslanGiaurgiev/classroom/releases/latest/download/Aitishkino.exe) и запустить.
+(https://github.com/RuslanGiaurgiev/classroom/releases/download/teacher-v1.0.0/Aitishkino.exe) и запустить.
 Панель открывается в браузере, приложение показывает окно управления. Сборку делает CI (GitHub Actions),
 исходники внутри скомпилированы. Версия — в `teacher/__init__.py`.
 
