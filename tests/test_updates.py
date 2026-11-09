@@ -48,18 +48,29 @@ def test_signature_checks():
 
 
 class FakeGitHub:
-    def __init__(self, version, exe, tamper=False):
+    def __init__(self, version, exe, tamper=False, teacher_is_latest=False):
         self.version, self.exe = version, exe
         self.manifest, self.sig = sign(exe, version)
         self.tamper = tamper
+        self.teacher_is_latest = teacher_is_latest   # «последний» релиз — приложение учителя (без манифеста)
 
     def app(self):
         app = web.Application()
         app.add_routes([web.get("/{o}/{r}/releases/latest/download/{name}", self.latest),
-                        web.get("/{o}/{r}/releases/download/{tag}/{name}", self.by_tag)])
+                        web.get("/{o}/{r}/releases/download/{tag}/{name}", self.by_tag),
+                        web.get("/api/repos/{o}/{r}/releases", self.releases)])
         return app
 
+    async def releases(self, request):
+        return web.json_response([
+            {"tag_name": "teacher-v1.0.1", "draft": False, "prerelease": False},
+            {"tag_name": f"agent-v{self.version}", "draft": False, "prerelease": False},
+            {"tag_name": "agent-v0.0.1", "draft": False, "prerelease": False},
+        ])
+
     async def latest(self, request):
+        if self.teacher_is_latest:
+            raise web.HTTPNotFound()
         name = request.match_info["name"]
         if name == "manifest.json":
             return web.Response(body=self.manifest)
@@ -68,7 +79,14 @@ class FakeGitHub:
         raise web.HTTPNotFound()
 
     async def by_tag(self, request):
-        if request.match_info["tag"] != f"agent-v{self.version}" or request.match_info["name"] != "agent.exe":
+        if request.match_info["tag"] != f"agent-v{self.version}":
+            raise web.HTTPNotFound()
+        name = request.match_info["name"]
+        if name == "manifest.json":
+            return web.Response(body=self.manifest)
+        if name == "manifest.sig":
+            return web.Response(body=self.sig.encode())
+        if name != "agent.exe":
             raise web.HTTPNotFound()
         return web.Response(body=self.exe + (b"!" if self.tamper else b""))
 
@@ -85,6 +103,18 @@ async def with_github(teacher, gh):
 async def test_teacher_downloads_verified_release(teacher):
     exe = os.urandom(50_000)
     runner = await with_github(teacher, FakeGitHub("9.9.9", exe))
+    try:
+        r = await teacher.updates.check()
+        assert r["latest"] == "9.9.9" and not r["error"]
+        assert Path(teacher.updates.latest["path"]).read_bytes() == exe
+    finally:
+        await runner.cleanup()
+
+
+async def test_agent_update_found_when_teacher_release_is_latest(teacher):
+    """Последним на GitHub оказался релиз приложения учителя — обновление агента всё равно находится."""
+    exe = os.urandom(20_000)
+    runner = await with_github(teacher, FakeGitHub("9.9.9", exe, teacher_is_latest=True))
     try:
         r = await teacher.updates.check()
         assert r["latest"] == "9.9.9" and not r["error"]

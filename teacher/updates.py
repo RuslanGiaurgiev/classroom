@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import re
 import json
 import logging
 import time
@@ -104,12 +105,23 @@ class UpdateManager:
         base = f"{self.github_base}/{repo}/releases"
         timeout = aiohttp.ClientTimeout(total=300, sock_connect=15)
         async with aiohttp.ClientSession(timeout=timeout, headers={"User-Agent": "ClassroomTeacher"}) as s:
-            async with s.get(f"{base}/latest/download/manifest.json") as r:
-                if r.status == 404:
-                    return None  # релизов ещё нет
-                r.raise_for_status()
-                manifest_bytes = await r.read()
-            async with s.get(f"{base}/latest/download/manifest.sig") as r:
+            where = f"{base}/latest/download"
+            async with s.get(f"{where}/manifest.json") as r:
+                status = r.status
+                manifest_bytes = await r.read() if status == 200 else b""
+            if status == 404:
+                # «Последним» может оказаться релиз приложения учителя (teacher-v…) — в нём нет
+                # манифеста агента. Ищем самый свежий релиз агента в списке релизов.
+                tag = await self._latest_agent_tag(s, repo)
+                if tag is None:
+                    return None  # релизов агента ещё нет
+                where = f"{base}/download/{tag}"
+                async with s.get(f"{where}/manifest.json") as r:
+                    r.raise_for_status()
+                    manifest_bytes = await r.read()
+            elif status != 200:
+                raise aiohttp.ClientResponseError(r.request_info, r.history, status=status)
+            async with s.get(f"{where}/manifest.sig") as r:
                 r.raise_for_status()
                 signature = (await r.text()).strip()
             manifest = verify_manifest(manifest_bytes, signature)
@@ -136,6 +148,24 @@ class UpdateManager:
         self._set_latest(version, manifest_bytes, signature, path)
         log.info("Доступна новая версия агента %s", version)
         return version
+
+    async def _latest_agent_tag(self, s: aiohttp.ClientSession, repo: str) -> str | None:
+        """Самый свежий релиз агента (agent-vX.Y.Z) по списку релизов GitHub."""
+        api = "https://api.github.com" if self.github_base.rstrip("/") == "https://github.com" \
+            else f"{self.github_base}/api"
+        async with s.get(f"{api}/repos/{repo}/releases", params={"per_page": "50"},
+                         headers={"Accept": "application/vnd.github+json"}) as r:
+            if r.status != 200:
+                return None
+            releases = await r.json(content_type=None)
+        best = None
+        for rel in releases if isinstance(releases, list) else []:
+            tag = str(rel.get("tag_name", ""))
+            if rel.get("draft") or rel.get("prerelease") or not re.fullmatch(r"agent-v\d+\.\d+\.\d+", tag):
+                continue
+            if best is None or is_newer(tag[len("agent-v"):], best[len("agent-v"):]):
+                best = tag
+        return best
 
     def _set_latest(self, version: str, manifest_bytes: bytes, signature: str, path: Path) -> None:
         info = {"version": version, "manifest_b64": base64.b64encode(manifest_bytes).decode(),
