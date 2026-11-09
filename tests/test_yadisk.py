@@ -97,7 +97,7 @@ async def env(tmp_path):
     await site.start()
     port = runner.addresses[0][1]
     storage = Storage(tmp_path / "teacher")
-    storage.update_settings(projects_root=str(tmp_path / "projects"), disk_root="Школа")
+    storage.update_settings(projects_root=str(tmp_path / "projects"), disk_root="Школа", disk_upload_enabled=True)
     tokens = MemoryTokenStore()
     server = TeacherServer(storage, host_ip_fn=lambda: "127.0.0.1", disk_token_store=tokens,
                            disk_api_base=f"http://127.0.0.1:{port}/v1/disk")
@@ -112,7 +112,7 @@ async def test_token_check_and_upload(env):
     status, r = await ui(server, "POST", "/ui/api/disk/token", json={"token": "short"})
     assert status == 400
     status, r = await ui(server, "POST", "/ui/api/disk/token", json={"token": TOKEN})
-    assert r["ok"] and "Школа" in r["message"] and "Школа" in fake.dirs
+    assert r["ok"] and "Подключено" in r["message"] and not fake.dirs   # проверка ничего не создаёт
     assert tokens.token == TOKEN
 
     await add_group(server, "Пн", "Маша")
@@ -166,3 +166,10 @@ async def test_no_overwrite_on_disk(env):
     server.db.q("UPDATE disk_queue SET status='pending', remote_path='Школа/Пн/Маша/2026-11-08/masha (2).sb3'")
     await server.disk.process_queue()
     assert len(fake.files) == 2
+
+
+async def test_upload_paused_by_default(env):
+    """Пока выгрузка не включена, файлы ждут в очереди и на Диск не уходят."""
+    server = env[0] if isinstance(env, tuple) else env.server
+    server.storage.update_settings(disk_upload_enabled=False)
+    assert await server.disk.process_queue() == 0

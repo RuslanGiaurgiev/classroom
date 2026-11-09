@@ -204,13 +204,14 @@
     const errors = (d.items || []).filter((i) => i.status !== "done" && i.last_error).slice(0, 8);
     body.append(
       group("Состояние", el("p", {}, el("b", {}, stateText)), el("p", { className: "muted small" }, `Выгружено: ${c.done || 0} · в очереди: ${c.pending || 0}`),
+        d.upload_enabled ? null : el("p", { className: "muted small" }, "⏸ Отправка работ пока выключена: настраиваем выгрузку прямо в папки детей. Подключиться и проверить связь уже можно."),
         ...errors.map((i) => el("div", { className: "muted small" }, `${i.remote_path}: ${i.last_error}`)),
         el("div", { className: "row" }, check, c.pending ? retry : null, d.has_token ? delTok : null), result),
       group(d.has_token ? "Подключить заново" : "Как подключить (один раз, ~5 минут)",
         el("ol", { className: "steps" },
           el("li", {}, "Войдите в браузере в Яндекс-аккаунт, на чей Диск складывать работы."),
           el("li", {}, "Нажмите ", createApp, " и создайте приложение: название «Компьютерный класс», платформа «Веб-сервисы», Redirect URI: ",
-            el("code", {}, "https://oauth.yandex.ru/verification_code"), ". В доступах отметьте «Яндекс Диск REST API → Запись в любом месте на Диске»."),
+            el("code", {}, "https://oauth.yandex.ru/verification_code"), ". В доступах отметьте «Яндекс Диск REST API» → «Чтение всего Диска» и «Запись в любом месте на Диске»."),
           el("li", {}, "Скопируйте ClientID приложения сюда: ", cid),
           el("li", {}, "Нажмите ", getTok, ", разрешите доступ и скопируйте показанный токен."),
           el("li", {}, "Вставьте токен: ", tok, " ", saveTok)),

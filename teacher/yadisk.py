@@ -156,6 +156,11 @@ class YandexDisk:
             return 0
         if self.state == "auth_error":
             return 0  # ждём, пока учитель введёт новый токен
+        if not self.server.storage.settings().get("disk_upload_enabled"):
+            # Выгрузка выключена, пока не настроена отправка в папки детей: очередь просто ждёт
+            if self.state not in ("offline",):
+                self._set_state("idle")
+            return 0
         due = self.db.q("SELECT * FROM disk_queue WHERE status='pending' AND next_try<=? ORDER BY id",
                         (self.clock(),))
         if not due:
@@ -272,12 +277,9 @@ class YandexDisk:
         try:
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20),
                                              headers={"Authorization": f"OAuth {token}"}) as s:
-                self._created_dirs.discard(self.root())
-                await self._mkdirs(s, self.root())
-                info = {}
+                # Только проверяем доступ — на Диске ничего не создаём
                 async with s.get(f"{self.api_base}/") as r:
-                    if r.status == 200:
-                        info = await r.json(content_type=None)
+                    info = await self._check(r)
         except DiskAuthError as e:
             self._set_state("auth_error")
             return {"ok": False, "message": str(e)}
@@ -286,7 +288,8 @@ class YandexDisk:
         if self.state in ("auth_error", "no_token", "offline"):
             self._set_state("idle")
         self.wake()
-        msg = f"Подключено. Папка на Диске: «{self.root()}»"
+        user = (info.get("user") or {}).get("display_name") or (info.get("user") or {}).get("login") or ""
+        msg = "Подключено" + (f" к Диску «{user}»" if user else "")
         if info.get("total_space"):
             free = (info["total_space"] - info.get("used_space", 0)) / 1024 ** 3
             msg += f". Свободно {free:.1f} ГБ"
@@ -314,6 +317,7 @@ class YandexDisk:
             "last_error": self.last_error,
             "root": self.root(),
             "client_id": st.get("disk_client_id", ""),
+            "upload_enabled": bool(st.get("disk_upload_enabled")),
             "counts": counts,
             "items": items,
         })
