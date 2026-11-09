@@ -62,6 +62,11 @@ class FakeYandex:
     async def meta(self, request):
         self.auth(request)
         p = self.path(request)
+        if p in self.dirs:
+            pre = p + "/"
+            names = {x[len(pre):].split("/")[0] for x in self.dirs | set(self.files) if x.startswith(pre)}
+            items = [{"name": n, "type": "dir" if pre + n in self.dirs else "file"} for n in sorted(names)]
+            return web.json_response({"_embedded": {"items": items, "total": len(items)}})
         if p not in self.files:
             return web.json_response({"message": "not found"}, status=404)
         return web.json_response({"sha256": hashlib.sha256(self.files[p]).hexdigest()})
@@ -97,7 +102,7 @@ async def env(tmp_path):
     await site.start()
     port = runner.addresses[0][1]
     storage = Storage(tmp_path / "teacher")
-    storage.update_settings(projects_root=str(tmp_path / "projects"), disk_root="Школа", disk_upload_enabled=True)
+    storage.update_settings(projects_root=str(tmp_path / "projects"), disk_root="Школа / 2026")
     tokens = MemoryTokenStore()
     server = TeacherServer(storage, host_ip_fn=lambda: "127.0.0.1", disk_token_store=tokens,
                            disk_api_base=f"http://127.0.0.1:{port}/v1/disk")
@@ -107,7 +112,27 @@ async def env(tmp_path):
     await runner.cleanup()
 
 
-async def test_token_check_and_upload(env):
+def mkdirs(fake, *paths):
+    for p in paths:
+        parts = p.split("/")
+        fake.dirs |= {"/".join(parts[:i]) for i in range(1, len(parts) + 1)}
+
+
+ROOT = "Школа/2026"
+
+
+async def setup_lesson(server, fake):
+    """Маша — папка есть (Make Code, уроки 1–2); Петя — папки нет."""
+    mkdirs(fake, f"{ROOT}/Маша Иванова/Make Code/Урок 1", f"{ROOT}/Маша Иванова/Make Code/Урок 2 — Цикл (01.11.2026)",
+           f"{ROOT}/Коля Орлов/Робототехника/Tinkercad/Урок 4")
+    gid, _ = await add_group(server, "Пн", "Иванова Маша Петровна\nПетя Сидоров\nОрлов Коля")
+    await receive(server, "1", "Маша проект.sb3", b"masha")
+    await receive(server, "2", "Петя игра.sb3", b"petya")
+    await receive(server, "3", "Коля модель.stl", b"kolya")
+    return gid
+
+
+async def test_token_check_creates_nothing(env):
     server, fake, tokens = env
     status, r = await ui(server, "POST", "/ui/api/disk/token", json={"token": "short"})
     assert status == 400
@@ -115,22 +140,85 @@ async def test_token_check_and_upload(env):
     assert r["ok"] and "Подключено" in r["message"] and not fake.dirs   # проверка ничего не создаёт
     assert tokens.token == TOKEN
 
-    await add_group(server, "Пн", "Маша")
-    await receive(server, "1", "masha.sb3", b"project")
-    await receive(server, "1", "непонятно.sb3", b"x")            # неразобранное — на Диск не идёт
+
+async def test_sorted_files_are_not_uploaded_automatically(env):
+    server, fake, tokens = env
+    tokens.token = TOKEN
+    await setup_lesson(server, fake)
     await server.disk.process_queue()
-    assert fake.files == {"Школа/Пн/Маша/2026-11-08/masha.sb3": b"project"}
-    assert fake.upload_auth_headers == [None]                    # токен не уходит на адрес загрузки
-    _, st = await ui(server, "GET", "/ui/api/disk")
-    assert st["counts"] == {"done": 1}
+    assert fake.files == {} and server.db.q("SELECT * FROM disk_queue") == []
+
+
+async def test_plan_and_send_into_kids_folders(env):
+    server, fake, tokens = env
+    tokens.token = TOKEN
+    gid = await setup_lesson(server, fake)
+    status, plan = await ui(server, "GET", f"/ui/api/disk/plan?group_id={gid}&date=2026-11-08&program=MakeCode")
+    assert status == 200, plan
+    by = {x["name"]: x for x in plan["students"]}
+    masha, petya = by["Иванова Маша Петровна"], by["Петя Сидоров"]
+    assert masha["status"] == "found" and masha["folder"] == "Маша Иванова" and masha["program_path"] == "Make Code"
+    assert sorted(masha["lessons"]) == ["1", "2"] and plan["lesson_suggest"] == 3
+    assert petya["status"] == "missing" and petya["new_name"] == "Петя Сидоров"
+    assert "Make Code" in plan["programs"]
+
+    body = {"group_id": gid, "date": "2026-11-08", "program": "MakeCode", "lesson": 3, "topic": " Анимация  ",
+            "students": [{"student_id": masha["student_id"], "folder": "Маша Иванова"},
+                         {"student_id": petya["student_id"], "folder": "Петя Сидоров"}]}
+    status, r = await ui(server, "POST", "/ui/api/disk/send", json=body)
+    assert status == 400 and "подтвердите" in r["error"]          # новую папку — только с подтверждением
+    assert fake.files == {}
+    body["students"][1]["create"] = True
+    status, r = await ui(server, "POST", "/ui/api/disk/send", json=body)
+    assert r == {"queued": 2, "skipped": 0, "created": ["Петя Сидоров"]}
+    await server.disk.process_queue()
+    assert set(fake.files) == {f"{ROOT}/Маша Иванова/Make Code/Урок 3 — Анимация (08.11.2026)/Маша проект.sb3",
+                               f"{ROOT}/Петя Сидоров/MakeCode/Урок 3 — Анимация (08.11.2026)/Петя игра.sb3"}
+    assert fake.upload_auth_headers == [None, None]               # токен не уходит на адрес загрузки
+
+    # Второй раз — ничего не дублируется; выбор папок и программа запомнились
+    status, r = await ui(server, "POST", "/ui/api/disk/send", json=body)
+    assert r["queued"] == 0 and r["skipped"] == 2
+    _, plan = await ui(server, "GET", f"/ui/api/disk/plan?group_id={gid}&date=2026-11-08")
+    assert {x["name"]: x["status"] for x in plan["students"]}["Петя Сидоров"] == "found"
+    assert plan["group_program"] == "MakeCode" and plan["topics"] == ["Анимация"]
+    assert all(f["sent"] for x in plan["students"] if x["name"] != "Орлов Коля" for f in x["files"])
+
+
+async def test_existing_lesson_and_direction_folders_reused(env):
+    server, fake, tokens = env
+    tokens.token = TOKEN
+    gid = await setup_lesson(server, fake)
+    _, plan = await ui(server, "GET", f"/ui/api/disk/plan?group_id={gid}&date=2026-11-08&program=tinkercad")
+    kolya = next(x for x in plan["students"] if x["name"] == "Орлов Коля")
+    assert kolya["folder"] == "Коля Орлов" and kolya["program_path"] == "Робототехника/Tinkercad"
+    await ui(server, "POST", "/ui/api/disk/send", json={
+        "group_id": gid, "date": "2026-11-08", "program": "Tinkercad", "lesson": 4, "topic": "Светофор",
+        "students": [{"student_id": kolya["student_id"], "folder": "Коля Орлов"}]})
+    await server.disk.process_queue()
+    assert list(fake.files) == [f"{ROOT}/Коля Орлов/Робототехника/Tinkercad/Урок 4/Коля модель.stl"]
+
+
+async def test_ambiguous_folder_and_missing_root(env):
+    server, fake, tokens = env
+    tokens.token = TOKEN
+    gid = await setup_lesson(server, fake)
+    mkdirs(fake, f"{ROOT}/Иванова Маша")
+    _, plan = await ui(server, "GET", f"/ui/api/disk/plan?group_id={gid}&date=2026-11-08&program=Make Code")
+    masha = next(x for x in plan["students"] if x["name"].startswith("Иванова"))
+    assert masha["status"] == "ambiguous" and sorted(masha["options"]) == ["Иванова Маша", "Маша Иванова"]
+    server.storage.update_settings(disk_root="Нет такой")
+    status, r = await ui(server, "GET", f"/ui/api/disk/plan?group_id={gid}&date=2026-11-08")
+    assert status == 400 and "Нет такой" in r["error"]
 
 
 async def test_offline_then_retry(env):
     server, fake, tokens = env
     tokens.token = TOKEN
-    await add_group(server, "Пн", "Маша")
+    await setup_lesson(server, fake)
+    fid = server.db.one("SELECT id FROM received WHERE name LIKE 'Маша%'")["id"]
     fake.online = False                                           # пропал интернет
-    await receive(server, "1", "masha.sb3", b"p")
+    server.disk.enqueue_remote(fid, f"{ROOT}/Маша Иванова/Make Code/Урок 3/a.sb3")
     await server.disk.process_queue()
     item = server.db.one("SELECT * FROM disk_queue")
     assert item["status"] == "pending" and item["attempts"] == 1 and item["next_try"] > 0
@@ -139,14 +227,15 @@ async def test_offline_then_retry(env):
     assert fake.files == {}
     await ui(server, "POST", "/ui/api/disk/retry")
     await server.disk.process_queue()
-    assert list(fake.files) == ["Школа/Пн/Маша/2026-11-08/masha.sb3"]
+    assert list(fake.files) == [f"{ROOT}/Маша Иванова/Make Code/Урок 3/a.sb3"]
 
 
 async def test_bad_token_pauses_queue(env):
     server, fake, tokens = env
     tokens.token = "y0_wrong_wrong_wrong_wrong_wrong"
-    await add_group(server, "Пн", "Маша")
-    await receive(server, "1", "masha.sb3", b"p")
+    await setup_lesson(server, fake)
+    fid = server.db.one("SELECT id FROM received LIMIT 1")["id"]
+    server.disk.enqueue_remote(fid, f"{ROOT}/x/a.sb3")
     await server.disk.process_queue()
     assert server.disk.state == "auth_error" and "недействителен" in server.disk.last_error
     assert server.db.one("SELECT status FROM disk_queue")["status"] == "pending"   # файл не потерян
@@ -155,21 +244,28 @@ async def test_bad_token_pauses_queue(env):
 async def test_no_overwrite_on_disk(env):
     server, fake, tokens = env
     tokens.token = TOKEN
-    await add_group(server, "Пн", "Маша")
-    fake.dirs |= {"Школа", "Школа/Пн", "Школа/Пн/Маша", "Школа/Пн/Маша/2026-11-08"}
-    fake.files["Школа/Пн/Маша/2026-11-08/masha.sb3"] = b"other content"
-    await receive(server, "1", "masha.sb3", b"mine")
+    await setup_lesson(server, fake)
+    fid = server.db.one("SELECT id FROM received WHERE name LIKE 'Маша%'")["id"]
+    folder = f"{ROOT}/Маша Иванова/Make Code/Урок 2 — Цикл (01.11.2026)"
+    fake.files[f"{folder}/m.sb3"] = b"other content"
+    server.disk.enqueue_remote(fid, f"{folder}/m.sb3")
     await server.disk.process_queue()
-    assert fake.files["Школа/Пн/Маша/2026-11-08/masha.sb3"] == b"other content"
-    assert fake.files["Школа/Пн/Маша/2026-11-08/masha (2).sb3"] == b"mine"
+    assert fake.files[f"{folder}/m.sb3"] == b"other content"
+    assert fake.files[f"{folder}/m (2).sb3"] == b"masha"
     # Тот же самый файл ещё раз — не дублируется
-    server.db.q("UPDATE disk_queue SET status='pending', remote_path='Школа/Пн/Маша/2026-11-08/masha (2).sb3'")
+    server.db.q("UPDATE disk_queue SET status='pending', remote_path=?", (f"{folder}/m (2).sb3",))
     await server.disk.process_queue()
     assert len(fake.files) == 2
 
 
-async def test_upload_paused_by_default(env):
-    """Пока выгрузка не включена, файлы ждут в очереди и на Диск не уходят."""
-    server = env[0] if isinstance(env, tuple) else env.server
-    server.storage.update_settings(disk_upload_enabled=False)
-    assert await server.disk.process_queue() == 0
+async def test_old_auto_queue_cancelled_once(env):
+    server, fake, tokens = env
+    tokens.token = TOKEN
+    await setup_lesson(server, fake)
+    fid = server.db.one("SELECT id FROM received LIMIT 1")["id"]
+    server.db.q("INSERT INTO disk_queue(received_id, local_path, remote_path, updated) VALUES (?,?,?,0)",
+                (fid, "/x", "Компьютерный класс/Пн/Маша/2026-11-08/a.sb3"))
+    server.storage.update_settings(disk_v2=False)
+    server.disk._cancel_old_auto_queue()
+    await server.disk.process_queue()
+    assert fake.files == {} and server.db.one("SELECT status FROM disk_queue")["status"] == "cancelled"

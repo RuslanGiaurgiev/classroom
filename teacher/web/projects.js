@@ -221,7 +221,8 @@
     side.append(finder);
     const c = disk.counts || {};
     const dtext = !disk.has_token ? "не подключён" : disk.state === "offline" ? `нет интернета, ждут ${c.pending || 0}`
-      : disk.state === "auth_error" ? "ошибка токена" : `выгружено ${c.done || 0}` + (c.pending ? `, в очереди ${c.pending}` : "");
+      : disk.state === "auth_error" ? "ошибка токена" : disk.state === "working" ? `отправляю, осталось ${c.pending || 0}`
+      : `отправлено ${c.done || 0}` + (c.pending ? `, в очереди ${c.pending}` : "");
     const dbtn = el("button", { className: "side-item", title: "Настройки Яндекс Диска" }, el("span", {}, "☁️"), el("span", { className: "small" }, "Яндекс Диск: " + dtext));
     dbtn.onclick = () => { App.showTab("settings"); if (App.openSettings) App.openSettings("disk"); };
     side.append(dbtn);
@@ -267,7 +268,9 @@
       if (!(await App.confirm(`Удалить группу «${g.name}» и её список учеников?\nРаботы на диске останутся.`, { okText: "Удалить", danger: true }))) return;
       await api("DELETE", `/ui/api/groups/${g.id}`); ok(`Группа «${g.name}» удалена`); view.groupId = null; reload();
     };
-    box.append(el("div", { className: "box-title" }, el("h2", {}, g.name), now, el("div", { className: "spacer" }), ren, del));
+    const toDisk = el("button", { className: "btn small", textContent: "☁️ На Диск", title: "Отправить работы урока в папки детей на Яндекс Диске" });
+    toDisk.onclick = () => App.diskSendDialog(g.id);
+    box.append(el("div", { className: "box-title" }, el("h2", {}, g.name), now, el("div", { className: "spacer" }), toDisk, ren, del));
 
     const grid = el("div", { className: "students-grid" });
     g.students.forEach((s, i) => {
@@ -455,6 +458,11 @@
     for (const n of nums) {
       const p = ev.progress[n];
       box.append(el("div", { className: "el-row " + p.stage }, el("b", {}, `${STAGE[p.stage] || ""} Ноутбук ${n}`), el("span", {}, p.text)));
+    }
+    if (!ev.running) {
+      const b = el("button", { className: "btn", textContent: "☁️ Отправить работы на Яндекс Диск" });
+      b.onclick = () => { b.closest(".modal")._close(); App.diskSendDialog(); };
+      box.append(el("div", { className: "row", style: "margin-top:12px" }, b));
     }
   }
   $("btnEndLesson").onclick = async () => {

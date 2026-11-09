@@ -76,7 +76,7 @@ code { background: var(--soft); border: 2px solid var(--line); padding: 1px 7px;
 .btn:focus-visible, .navbtn:focus-visible, .acard:focus-visible, .tile:focus-visible { outline: 4px solid var(--orange); outline-offset: 3px; }
 
 /* ---------- Поля ---------- */
-textarea, input[type=text], input[type=number], input[type=password], select {
+textarea, input[type=text], input[type=number], input[type=password], input[type=date], input[type=search], select {
   font: inherit; font-weight: 700; color: var(--ink); background: #fff; border: 3px solid var(--line); border-radius: 14px; padding: 10px 12px; outline: none; }
 textarea:focus, input:focus, select:focus { border-color: var(--teal); }
 textarea { width: 100%; resize: vertical; }
@@ -285,3 +285,15 @@ details.log-box summary { cursor: pointer; font-family: var(--font-head); text-t
 .ow-x:hover { background: var(--red); color: #fff; }
 .ow-x:focus-visible { outline: 3px solid var(--orange); }
 .closing { opacity: .4; pointer-events: none; }
+
+/* ---------- На Диск ---------- */
+.ds-form { display: grid; grid-template-columns: 1.2fr 1fr 1.4fr .6fr 2fr; gap: 10px; align-items: end; }
+@media (max-width: 800px) { .ds-form { grid-template-columns: 1fr 1fr; } }
+.ds-form .field input, .ds-form .field select { width: 100%; }
+.ds-list { display: grid; gap: 4px; margin-top: 8px; }
+.ds-row { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border-radius: 14px; border: 2px solid var(--soft); }
+.ds-row.done { opacity: .55; }
+.ds-row > input { margin-top: 4px; width: 18px; height: 18px; flex: none; }
+.ds-main { flex: 1; min-width: 0; display: grid; gap: 3px; }
+.ds-warn { color: var(--orange-dark, #b85c00); font-weight: 700; display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.ds-dest { overflow-wrap: anywhere; }

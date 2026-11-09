@@ -2,7 +2,8 @@
 Выгрузка разобранных проектов на Яндекс Диск (REST API).
 
   • OAuth-токен (право cloud_api:disk.write) хранится только в Связке ключей macOS (keyring);
-  • структура на Диске повторяет локальную: <Школа>/<Группа>/<Имя>/<дата>/<файл>;
+  • отправка только по кнопке учителя (teacher/disk_send.py): работы кладутся в папки детей
+    <Папка школы>/<Ребёнок>/<Программа>/<Урок N — тема (дата)>/<файл>;
   • очередь в SQLite (disk_queue) с повторами: если пропал интернет, файлы ждут
     и отправляются позже (задержка растёт: 30 с, 1 мин, 2 мин … до 1 часа);
   • ничего не перезаписываем: если на Диске уже есть файл с таким именем, но другим
@@ -78,6 +79,12 @@ class MemoryTokenStore:
         self.token = None
 
 
+def root_path(value: str) -> str:
+    """«Марьино / 2026-2027» → «Марьино/2026-2027» (каждая часть — допустимое имя папки)."""
+    parts = [safe_name(p.strip()) for p in str(value).replace("\\", "/").split("/") if p.strip()]
+    return "/".join(parts)
+
+
 def _unique_remote(path: str, n: int) -> str:
     if n < 2:
         return path
@@ -102,25 +109,35 @@ class YandexDisk:
         self._created_dirs: set[str] = set()
         self._task: asyncio.Task | None = None
         self._lock = asyncio.Lock()   # очередь обрабатывается строго по одному
-        server.sorter.on_file_sorted.append(self.enqueue)
+        self._cancel_old_auto_queue()
+
+    def _cancel_old_auto_queue(self) -> None:
+        """Раньше работы выгружались сами в «Школа/Группа/Ученик/Дата». Такие неотправленные — отменяем."""
+        st = self.server.storage.settings()
+        if st.get("disk_v2"):
+            return
+        self.db.q("UPDATE disk_queue SET status='cancelled' WHERE status!='done'")
+        self.server.storage.update_settings(disk_v2=True)
 
     # ================= Очередь =================
 
     def root(self) -> str:
-        return safe_name(self.server.storage.settings().get("disk_root") or "Компьютерный класс")
+        """Папка с папками детей, например «Марьино/2026-2027»."""
+        return root_path(self.server.storage.settings().get("disk_root") or "")
 
-    async def enqueue(self, file_id: int) -> None:
-        f = self.db.one(
-            "SELECT r.*, s.name AS student, g.name AS group_name FROM received r"
-            " JOIN students s ON s.id = r.student_id JOIN groups g ON g.id = s.group_id WHERE r.id=?", (file_id,))
-        if f is None or not f["project_path"]:
-            return
-        remote = "/".join([self.root(), f["group_name"], f["student"], f["lesson_date"], Path(f["project_path"]).name])
-        # Если файл переназначили другому ученику — старую неотправленную задачу отменяем
-        self.db.q("DELETE FROM disk_queue WHERE received_id=? AND status!='done'", (file_id,))
-        self.db.q("INSERT OR IGNORE INTO disk_queue(received_id, local_path, remote_path, updated) VALUES (?,?,?,?)",
-                  (file_id, f["project_path"], remote, self.clock()))
+    def enqueue_remote(self, file_id: int, remote: str) -> bool:
+        """Поставить файл в очередь на Диск по точному пути. False — уже стоит в очереди/отправлен туда."""
+        f = self.db.one("SELECT * FROM received WHERE id=?", (file_id,))
+        if f is None:
+            return False
+        if self.db.one("SELECT id FROM disk_queue WHERE received_id=? AND remote_path=? AND status!='cancelled'",
+                       (file_id, remote)):
+            return False
+        self.db.q("DELETE FROM disk_queue WHERE received_id=? AND remote_path=?", (file_id, remote))
+        self.db.q("INSERT INTO disk_queue(received_id, local_path, remote_path, updated) VALUES (?,?,?,?)",
+                  (file_id, f["project_path"] or f["inbox_path"], remote, self.clock()))
         self._wake.set()
+        return True
 
     def start(self) -> None:
         self._task = asyncio.create_task(self._loop())
@@ -156,11 +173,6 @@ class YandexDisk:
             return 0
         if self.state == "auth_error":
             return 0  # ждём, пока учитель введёт новый токен
-        if not self.server.storage.settings().get("disk_upload_enabled"):
-            # Выгрузка выключена, пока не настроена отправка в папки детей: очередь просто ждёт
-            if self.state not in ("offline",):
-                self._set_state("idle")
-            return 0
         due = self.db.q("SELECT * FROM disk_queue WHERE status='pending' AND next_try<=? ORDER BY id",
                         (self.clock(),))
         if not due:
@@ -227,6 +239,28 @@ class YandexDisk:
             async with s.put(f"{self.api_base}/resources", params={"path": f"disk:/{path}"}) as r:
                 await self._check(r, ok=(201, 409))   # 409 — папка уже есть
             self._created_dirs.add(path)
+
+    async def list_dir(self, s: aiohttp.ClientSession, path: str) -> list[dict] | None:
+        """Содержимое папки на Диске: [{"name", "type": dir|file}]. None — папки нет."""
+        out: list[dict] = []
+        while True:
+            params = {"path": f"disk:/{path}", "limit": "1000", "offset": str(len(out)),
+                      "fields": "_embedded.items.name,_embedded.items.type,_embedded.total"}
+            async with s.get(f"{self.api_base}/resources", params=params) as r:
+                if r.status == 404:
+                    return None
+                data = (await self._check(r)).get("_embedded") or {}
+            items = data.get("items") or []
+            out += [{"name": str(i.get("name", "")), "type": i.get("type")} for i in items]
+            if not items or len(out) >= int(data.get("total") or 0):
+                return out
+
+    def session(self, total: float = 60) -> aiohttp.ClientSession:
+        token = self.tokens.get()
+        if not token:
+            raise DiskAuthError("Яндекс Диск не подключён — «Настройки» → «Яндекс Диск»")
+        return aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=total),
+                                     headers={"Authorization": f"OAuth {token}"})
 
     async def _remote_sha(self, s: aiohttp.ClientSession, remote: str) -> str | None:
         async with s.get(f"{self.api_base}/resources", params={"path": f"disk:/{remote}", "fields": "sha256"}) as r:
@@ -317,7 +351,6 @@ class YandexDisk:
             "last_error": self.last_error,
             "root": self.root(),
             "client_id": st.get("disk_client_id", ""),
-            "upload_enabled": bool(st.get("disk_upload_enabled")),
             "counts": counts,
             "items": items,
         })

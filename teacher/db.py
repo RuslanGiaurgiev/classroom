@@ -54,6 +54,12 @@ CREATE TABLE IF NOT EXISTS disk_queue (
     updated REAL NOT NULL,
     UNIQUE (received_id, remote_path)
 );
+
+-- Какая папка на Яндекс Диске принадлежит ученику (учитель подтвердил один раз)
+CREATE TABLE IF NOT EXISTS disk_links (
+    student_id INTEGER PRIMARY KEY REFERENCES students(id) ON DELETE CASCADE,
+    folder TEXT NOT NULL
+);
 """
 
 

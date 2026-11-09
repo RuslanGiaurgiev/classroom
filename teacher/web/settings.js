@@ -168,7 +168,7 @@
 
   // ---------- ☁️ Яндекс Диск ----------
   async function disk(body) {
-    head(body, "☁️ Яндекс Диск", "Разобранные работы сами копируются на Яндекс Диск: Школа / Группа / Ученик / Дата. Если интернета нет — ждут и уходят позже.");
+    head(body, "☁️ Яндекс Диск", "Работы урока отправляются в папки детей кнопкой «☁️ На Диск» (вкладка «Работы» или после «Конца урока»): Ребёнок / Программа / Урок N — тема (дата). Если интернета нет — ждут и уходят позже. С Диска ничего не удаляется.");
     let d = App.disk || {};
     try { d = await api("GET", "/ui/api/disk"); } catch (e) { /* покажем то, что есть */ }
     const st = App.state.settings || {};
@@ -198,13 +198,12 @@
     };
     const delTok = el("button", { className: "btn red small", textContent: "Отключить Диск" });
     delTok.onclick = async () => { if (await App.confirm("Удалить токен Яндекс Диска с этого Mac?", { okText: "Удалить", danger: true })) { await api("DELETE", "/ui/api/disk/token"); setTimeout(renderBody, 300); } };
-    const rootName = el("input", { type: "text", value: st.disk_root || "Компьютерный класс", style: "flex:1" });
+    const rootName = el("input", { type: "text", value: st.disk_root || "", placeholder: "например, Марьино/2026-2027", style: "flex:1" });
     const saveRoot = el("button", { className: "btn small", textContent: "Сохранить" });
     saveRoot.onclick = () => save({ disk_root: rootName.value }, "Папка на Диске сохранена").then(() => (dirty = false));
     const errors = (d.items || []).filter((i) => i.status !== "done" && i.last_error).slice(0, 8);
     body.append(
       group("Состояние", el("p", {}, el("b", {}, stateText)), el("p", { className: "muted small" }, `Выгружено: ${c.done || 0} · в очереди: ${c.pending || 0}`),
-        d.upload_enabled ? null : el("p", { className: "muted small" }, "⏸ Отправка работ пока выключена: настраиваем выгрузку прямо в папки детей. Подключиться и проверить связь уже можно."),
         ...errors.map((i) => el("div", { className: "muted small" }, `${i.remote_path}: ${i.last_error}`)),
         el("div", { className: "row" }, check, c.pending ? retry : null, d.has_token ? delTok : null), result),
       group(d.has_token ? "Подключить заново" : "Как подключить (один раз, ~5 минут)",
@@ -216,7 +215,7 @@
           el("li", {}, "Нажмите ", getTok, ", разрешите доступ и скопируйте показанный токен."),
           el("li", {}, "Вставьте токен: ", tok, " ", saveTok)),
         el("p", { className: "muted small" }, "Токен хранится только в Связке ключей этого Mac.")),
-      group("Папка школы на Диске", el("div", { className: "row" }, rootName, saveRoot)));
+      group("Папка с папками детей на Диске", el("p", { className: "muted small" }, "Путь от корня Диска, через «/». Каждый учебный год — меняйте здесь."), el("div", { className: "row" }, rootName, saveRoot)));
   }
 
   // ---------- ⟳ Обновления ----------

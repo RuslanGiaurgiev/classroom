@@ -115,6 +115,8 @@ class TeacherServer:
         self.updates = UpdateManager(self)
         self.materials = MaterialsManager(self)
         self.disk = YandexDisk(self, token_store=disk_token_store, **({"api_base": disk_api_base} if disk_api_base else {}))
+        from teacher.disk_send import DiskSender
+        self.disk_send = DiskSender(self)
         self.on_agent_connected.append(self._send_config)
         self.on_settings_changed.append(self._config_changed)
 
@@ -145,6 +147,7 @@ class TeacherServer:
         app.add_routes(self.importer.routes())
         app.add_routes(self.backups.routes())
         app.add_routes(self.disk.routes())
+        app.add_routes(self.disk_send.routes())
         app.add_routes(self.end_lesson.routes())
         app.add_routes(self.updates.routes())
         app.add_routes(self.materials.routes())
@@ -578,9 +581,10 @@ class TeacherServer:
                 raise ValueError("Порог похожести имён: от 60 до 100")
             out["name_threshold"] = t
         if "disk_root" in body:
-            name = " ".join(str(body["disk_root"]).split())[:80]
-            if not name or "/" in name or "\\" in name:
-                raise ValueError("Название папки на Диске: без символов / и \\")
+            from teacher.yadisk import root_path
+            name = root_path(" ".join(str(body["disk_root"]).split())[:150])
+            if not name:
+                raise ValueError("Укажите папку на Диске, например: Марьино/2026-2027")
             out["disk_root"] = name
         if "disk_client_id" in body:
             cid = str(body["disk_client_id"]).strip()
