@@ -71,12 +71,21 @@ def hash_token(token: str) -> str:
 def atomic_write_json(path: Path, data: Any) -> None:
     """Пишем во временный файл и переименовываем — файл никогда не окажется «наполовину записан»."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp = path.with_suffix(f"{path.suffix}.{uuid.uuid4().hex[:8]}.tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
         f.flush()
         os.fsync(f.fileno())
-    os.replace(tmp, path)
+    # В Windows файл бывает на мгновение занят (антивирус, поиск) — пробуем ещё раз
+    for attempt in range(20):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == 19:
+                tmp.unlink(missing_ok=True)
+                raise
+            time.sleep(0.05)
 
 
 class Storage:
