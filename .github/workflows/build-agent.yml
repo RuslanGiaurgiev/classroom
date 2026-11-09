@@ -45,6 +45,7 @@ jobs:
         run: >
           pyinstaller --onefile --noconsole --clean --name agent
           --paths . --collect-submodules zeroconf --collect-submodules comtypes
+          --runtime-hook tools/rthook_fresh_unpack.py
           agent/run_agent.py
       - name: Проверка, что exe собрался
         shell: pwsh
@@ -56,6 +57,13 @@ jobs:
         run: |
           $p = Start-Process -FilePath dist/agent.exe -ArgumentList "--selftest", "selftest.txt" -Wait -PassThru
           $r = Get-Content selftest.txt
+          "Результат: $r"
+          if (-not $r.StartsWith("ok ")) { exit 1 }
+      - name: Самопроверка запуска «по наследству» (как при самообновлении со старой версии)
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath dist/agent.exe -ArgumentList "--ci-inherit-test", "inherit.txt" -Wait -PassThru
+          $r = Get-Content inherit.txt
           "Результат: $r"
           if (-not $r.StartsWith("ok ")) { exit 1 }
       - uses: actions/upload-artifact@v4

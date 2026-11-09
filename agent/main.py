@@ -148,6 +148,22 @@ def selftest(out_file: str) -> int:
         return 1
 
 
+def ci_inherit_test(out_file: str) -> int:
+    """
+    Проверка в CI ровно того, что ломалось при самообновлении: у текущей распаковки удаляем
+    данные tkinter (так делал завершившийся старый агент) и запускаем свою копию «по наследству»,
+    без сброса окружения. Копия должна сама перезапуститься начисто и пройти самопроверку.
+    """
+    import subprocess
+    base = getattr(sys, "_MEIPASS", None)
+    if not base:
+        Path(out_file).write_text("fail не собранный exe", encoding="utf-8")
+        return 1
+    shutil.rmtree(os.path.join(base, "_tcl_data"), ignore_errors=True)
+    shutil.rmtree(os.path.join(base, "_tk_data"), ignore_errors=True)
+    return subprocess.call([sys.executable, "--selftest", out_file], timeout=120)
+
+
 def main(argv: list[str] | None = None, platform: Platform | None = None) -> int:
     parser = argparse.ArgumentParser(description="Агент компьютерного класса")
     parser.add_argument("--install", action="store_true")
@@ -155,10 +171,14 @@ def main(argv: list[str] | None = None, platform: Platform | None = None) -> int
     parser.add_argument("--overlay", help=argparse.SUPPRESS)  # служебный: полноэкранное окно
     parser.add_argument("--after-update", help=argparse.SUPPRESS)  # служебный: запуск после обновления
     parser.add_argument("--selftest", help=argparse.SUPPRESS)      # служебный: проверка сборки в CI
+    parser.add_argument("--ci-inherit-test", help=argparse.SUPPRESS)  # служебный: запуск «по наследству» (CI)
     args = parser.parse_args(argv)
 
     if args.selftest:
         return selftest(args.selftest)
+
+    if args.ci_inherit_test:
+        return ci_inherit_test(args.ci_inherit_test)
 
     if args.overlay:
         # Отдельный процесс полноэкранного окна — без логов, mutex и сети
