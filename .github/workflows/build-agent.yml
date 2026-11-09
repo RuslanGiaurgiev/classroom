@@ -96,3 +96,39 @@ jobs:
           python tools/sign_release.py dist/agent.exe "$VER" dist/
           gh release create "agent-v$VER" dist/agent.exe dist/manifest.json dist/manifest.sig \
             --title "Агент $VER" --notes "Автоматическая сборка из $GITHUB_SHA. Подписано ключом обновлений."
+
+      # ----- Приложение учителя для Windows (админский ноутбук) -----
+      - name: Сборка «Айтишкино.exe» (приложение учителя)
+        run: >
+          pyinstaller --onefile --noconsole --clean --name Aitishkino
+          --icon teacher/web/icon.ico --paths . --collect-submodules zeroconf
+          --add-data "teacher/web;teacher/web"
+          --exclude-module webview --exclude-module keyring --exclude-module clr --exclude-module pythonnet
+          teacher/run_teacher.py
+      - name: Самопроверка собранного Айтишкино.exe
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath dist/Aitishkino.exe -ArgumentList "--selftest", "tsel.txt" -Wait -PassThru
+          $r = Get-Content tsel.txt
+          "Результат: $r"
+          if (-not $r.StartsWith("ok ")) { exit 1 }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aitishkino-windows
+          path: dist/Aitishkino.exe
+          retention-days: 30
+      # Публикуем приложение учителя (подпись не нужна — это не автообновляемый агент)
+      - name: Публикация «Айтишкино.exe»
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER=$(python -c "import teacher; print(teacher.__version__)")
+          if gh release view "teacher-v$VER" >/dev/null 2>&1; then
+            echo "Релиз teacher-v$VER уже есть — пропускаю (увеличьте версию в teacher/__init__.py)"
+            exit 0
+          fi
+          gh release create "teacher-v$VER" dist/Aitishkino.exe \
+            --title "Айтишкино (приложение учителя) $VER" \
+            --notes "Приложение учителя для Windows. Скачайте Aitishkino.exe и запустите. Собрано из $GITHUB_SHA."

@@ -27,6 +27,7 @@ from aiohttp import web
 
 from shared.ignore import BUILTIN_PATTERNS, clean_patterns, ignored_by_patterns
 from teacher.inbox import safe_name, unique_path
+from teacher.osbridge import open_path, reveal
 from teacher.names import DEFAULT_THRESHOLD, group_code, match_students, suggest_alias
 
 if TYPE_CHECKING:
@@ -425,7 +426,7 @@ class Sorter:
         path = f["project_path"] if f["project_path"] and Path(f["project_path"]).exists() else f["inbox_path"]
         if not Path(path).exists():
             return web.json_response({"error": "Файл удалён с Mac"}, status=404)
-        _open([path])
+        open_path(path)
         return web.json_response({"ok": True})
 
     async def handle_reveal(self, request: web.Request) -> web.Response:
@@ -434,7 +435,7 @@ class Sorter:
         if f is None:
             return web.json_response({"error": "Файл не найден"}, status=404)
         path = f["project_path"] if f["project_path"] and Path(f["project_path"]).exists() else f["inbox_path"]
-        _open(["-R", path])
+        reveal(path)
         return web.json_response({"ok": True})
 
     async def handle_open_folder(self, request: web.Request) -> web.Response:
@@ -443,10 +444,6 @@ class Sorter:
         sub = names.get(body.get("which", "root"), "")
         path = self.server.projects_root() / sub
         path.mkdir(parents=True, exist_ok=True)
-        _open([str(path)])
+        open_path(path)
         return web.json_response({"ok": True})
 
-
-def _open(args: list[str]) -> None:
-    if sys.platform == "darwin":
-        subprocess.Popen(["open", *args])

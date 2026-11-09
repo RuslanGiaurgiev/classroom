@@ -485,14 +485,12 @@ class TeacherServer:
         }
 
     async def handle_ui_open_url(self, request: web.Request) -> web.Response:
-        """Открыть страницу в обычном браузере Mac. Только страницы Яндекса для получения токена."""
+        """Открыть страницу в браузере по умолчанию. Только страницы Яндекса для получения токена."""
         url = str((await request.json()).get("url", ""))
         if not url.startswith(("https://oauth.yandex.ru/", "https://yandex.ru/dev/disk")):
             return web.json_response({"error": "Можно открывать только страницы oauth.yandex.ru"}, status=400)
-        import subprocess
-        import sys
-        if sys.platform == "darwin":
-            subprocess.Popen(["open", url])
+        from teacher.osbridge import open_url
+        open_url(url)
         return web.json_response({"ok": True})
 
     async def handle_ui_settings(self, request: web.Request) -> web.Response:

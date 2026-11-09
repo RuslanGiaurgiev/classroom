@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 import secrets
 import threading
 import time
@@ -61,6 +62,9 @@ def default_data_dir() -> Path:
     env = os.environ.get("CLASSROOM_TEACHER_DATA")
     if env:
         return Path(env)
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return Path(base) / "ClassroomTeacher"
     return Path.home() / "Library" / "Application Support" / "ClassroomTeacher"
 
 

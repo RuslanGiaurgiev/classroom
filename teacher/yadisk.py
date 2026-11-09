@@ -79,6 +79,15 @@ class MemoryTokenStore:
         self.token = None
 
 
+def default_token_store(data_dir):
+    """Хранилище токена Диска: на Windows — DPAPI-файл, на Mac — Связка ключей."""
+    import sys
+    if sys.platform == "win32":
+        from teacher.winsecret import DpapiTokenStore
+        return DpapiTokenStore(data_dir)
+    return KeyringTokenStore()
+
+
 def root_path(value: str) -> str:
     """«Марьино / 2026-2027» → «Марьино/2026-2027» (каждая часть — допустимое имя папки)."""
     parts = [safe_name(p.strip()) for p in str(value).replace("\\", "/").split("/") if p.strip()]
@@ -100,7 +109,7 @@ class YandexDisk:
                  clock: Callable[[], float] = time.time):
         self.server = server
         self.db = server.db
-        self.tokens = token_store or KeyringTokenStore()
+        self.tokens = token_store or default_token_store(server.storage.data_dir)
         self.api_base = api_base
         self.clock = clock
         self.state = "idle"          # idle | working | offline | auth_error | no_token

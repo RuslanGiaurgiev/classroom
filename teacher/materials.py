@@ -87,24 +87,9 @@ def collect_items(paths: list[str]) -> list[dict]:
 
 
 def pick_dialog(kind: str) -> list[str]:
-    """Стандартное окно выбора macOS. kind: files | folders. Отмена → []."""
-    if sys.platform != "darwin":
-        return []
-    what = "choose file with prompt \"Выберите файлы для отправки на ноутбуки\"" if kind == "files" \
-        else "choose folder with prompt \"Выберите папки для отправки на ноутбуки\""
-    script = (
-        "tell me to activate\n"
-        f"set chosen to ({what} with multiple selections allowed)\n"
-        "set out to \"\"\n"
-        "repeat with x in chosen\n"
-        "  set out to out & POSIX path of x & linefeed\n"
-        "end repeat\n"
-        "return out"
-    )
-    r = subprocess.run(["osascript", "-e", script], capture_output=True, text=True)
-    if r.returncode != 0:
-        return []  # учитель нажал «Отменить»
-    return [line.rstrip("/") for line in r.stdout.splitlines() if line.strip()]
+    """Окно выбора файлов/папок (Mac или Windows). kind: files | folders. Отмена → []."""
+    from teacher.osbridge import pick_dialog as _pick
+    return _pick(kind)
 
 
 class MaterialsManager:
