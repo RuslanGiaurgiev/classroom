@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import shutil
+import sys
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -50,6 +51,17 @@ FOLDER_BASES = ("downloads", "desktop", "documents")
 CHUNK = 4 * 1024 * 1024          # размер куска при отправке
 FULL_SCAN_EVERY = 30.0           # полный обход папок, секунд
 TRASH_DAYS = 7
+
+
+def _is_agent_itself(path: Path, rel_path: str) -> bool:
+    """Файл — это agent.exe (запущенный или просто скачанный для установки)."""
+    from shared.ignore import AGENT_PATTERNS, ignored_by_patterns
+    if ignored_by_patterns(rel_path, AGENT_PATTERNS):
+        return True
+    try:
+        return path.resolve() == Path(sys.executable).resolve()
+    except OSError:
+        return False
 
 
 def folder_key(spec: dict) -> str:
@@ -489,6 +501,8 @@ class Collector:
             path = root / row.rel_path
             if self._is_excluded(path):
                 continue  # материалы урока никогда не удаляем
+            if _is_agent_itself(path, row.rel_path):
+                continue  # сам агент (запущенный exe) никогда не трогаем
             if row.sha256 not in confirmed_by_teacher:
                 kept.append(f"{row.rel_path}: учитель не подтвердил")
                 continue

@@ -102,7 +102,15 @@ def overlay_command(spec: dict) -> tuple[list[str], str | None]:
     import json
     arg = base64.urlsafe_b64encode(json.dumps(spec, ensure_ascii=False).encode()).decode()
     if getattr(sys, "frozen", False):
-        return [sys.executable, "--overlay", arg], None
+        exe = sys.executable
+        if not os.path.exists(exe):
+            # Файл, из которого запущен агент, удалили или переместили (например, агент запускали
+            # из «Загрузок») — окно запускаем из установленной копии
+            base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+            installed = Path(base) / APP_NAME / "bin" / "agent.exe"
+            if installed.exists():
+                exe = str(installed)
+        return [exe, "--overlay", arg], None
     # Запуск из исходников (для разработки)
     repo = str(Path(__file__).resolve().parents[2])
     return [sys.executable, "-m", "agent.main", "--overlay", arg], repo

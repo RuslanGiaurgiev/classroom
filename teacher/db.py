@@ -98,7 +98,11 @@ class DB:
              f.get("received_at", time.time()), f["lesson_date"], f["inbox_path"]))
 
     def confirmed_shas(self, laptop: str) -> list[str]:
-        return [r["sha256"] for r in self.q("SELECT sha256 FROM received WHERE laptop=?", (laptop,))]
+        # agent.exe, случайно попавший в работы, ноутбуку «к удалению» не называем: это может быть
+        # запущенный агент (его можно переместить в корзину, и окна «Внимание» перестанут открываться)
+        from shared.ignore import AGENT_PATTERNS, ignored_by_patterns
+        return [r["sha256"] for r in self.q("SELECT sha256, name FROM received WHERE laptop=?", (laptop,))
+                if not ignored_by_patterns(r["name"], AGENT_PATTERNS)]
 
     # ---------- Группы и ученики ----------
 

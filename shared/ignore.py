@@ -24,6 +24,10 @@ BUILTIN_PATTERNS = [
     "logs/", "log/", "cache/", "caches/", "temp/", "tmp/", "crashpad/", "crash reports/", "gpucache/",
     "code cache/", "node_modules/", "__pycache__/", ".git/",
 ]
+# Сам агент (его скачивают в «Загрузки», чтобы установить) — не работа ученика.
+# Иначе он уходит учителю, а «Конец урока» убирает запущенный agent.exe в корзину.
+AGENT_PATTERNS = ["agent.exe", "agent (*).exe", "agent(*).exe"]
+BUILTIN_PATTERNS += AGENT_PATTERNS
 
 MAX_USER_PATTERNS = 100
 

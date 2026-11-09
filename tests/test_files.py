@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import os
+import sys
 from pathlib import Path
 
 import aiohttp
@@ -404,3 +405,23 @@ async def test_same_content_saved_again_after_teacher_deleted_it(teacher, tmp_pa
     await wait_for(lambda: (teacher.db.find_received("5", sha) or {}).get("status") not in (None, "deleted"), timeout=10)
     assert teacher.db.find_received("5", sha)["name"] == "миньон (1).stl"
     await stop_agent(client, task)
+
+
+
+def test_agent_exe_is_never_collected_or_cleaned(tmp_path):
+    """agent.exe в «Загрузках» (скачали для установки) — не работа ученика и не удаляется «Концом урока»."""
+    from agent.collector import _is_agent_itself
+    from shared.ignore import BUILTIN_PATTERNS, ignored_by_patterns
+    for name in ("agent.exe", "agent (2).exe", "Agent.EXE"):
+        assert ignored_by_patterns(name, BUILTIN_PATTERNS)
+        assert _is_agent_itself(tmp_path / name, name)
+    assert not ignored_by_patterns("игра агента.sb3", BUILTIN_PATTERNS)
+    assert _is_agent_itself(Path(sys.executable), "python")       # запущенный файл — никогда
+
+
+async def test_teacher_does_not_offer_agent_exe_for_cleanup(teacher):
+    from tests.test_names import receive
+    await receive(teacher, "7", "agent.exe", b"MZ fake exe")
+    await receive(teacher, "7", "кот.sb3", b"cat")
+    shas = teacher.db.confirmed_shas("7")
+    assert shas == [hashlib.sha256(b"cat").hexdigest()]
